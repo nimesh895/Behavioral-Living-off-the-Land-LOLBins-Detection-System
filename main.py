@@ -77,11 +77,16 @@ def main() -> int:
         window_seconds=config.engine.window_seconds,
     )
 
-    # Initialize Output Dispatcher & Process Collector
+    # Initialize Output Dispatcher with Timeline Reconstruction and Exporters
     dispatcher = AlertDispatcher(
         console_alerts=config.output.console_alerts,
         json_log_path=config.output.json_log_path,
+        markdown_reports_dir=config.output.markdown_reports_dir,
+        db_manager=db,
+        timeline_window_seconds=config.output.timeline_window_seconds,
     )
+
+    # Initialize Process Collector
     collector = ProcessCollector(
         mode=config.collector.mode,
         poll_interval=config.collector.poll_interval_seconds,

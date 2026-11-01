@@ -1,5 +1,6 @@
 """SQLite database manager for persisting process events and alerts."""
 
+from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
@@ -130,6 +131,66 @@ class DatabaseManager:
                 conn.execute(query, params)
         except sqlite3.Error as exc:
             logger.error("Failed to insert alert %s: %s", alert.alert_id, exc)
+
+    def get_events_around_timestamp(
+        self,
+        target_timestamp: str,
+        window_seconds: float = 300.0,
+    ) -> list[ProcessEvent]:
+        """Retrieve recorded process creation events within a temporal window (±window_seconds).
+
+        Args:
+            target_timestamp: ISO 8601 string of the reference timestamp.
+            window_seconds: Seconds before and after the timestamp to capture (default: 300s / 5 min).
+
+        Returns:
+            Chronologically ordered list of ProcessEvent instances within the window.
+        """
+        try:
+            clean = target_timestamp.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(clean)
+            target_epoch = dt.timestamp()
+        except Exception:
+            target_epoch = datetime.now(timezone.utc).timestamp()
+
+        start_epoch = target_epoch - window_seconds
+        end_epoch = target_epoch + window_seconds
+
+        start_iso = datetime.fromtimestamp(start_epoch, tz=timezone.utc).isoformat()
+        end_iso = datetime.fromtimestamp(end_epoch, tz=timezone.utc).isoformat()
+
+        query = """
+            SELECT event_id, timestamp, creation_time, pid, ppid, image,
+                   command_line, user, parent_image, integrity_level
+            FROM process_events
+            WHERE timestamp >= ? AND timestamp <= ?
+            ORDER BY timestamp ASC
+        """
+
+        events: list[ProcessEvent] = []
+        try:
+            with self._get_connection() as conn:
+                cursor = conn.execute(query, (start_iso, end_iso))
+                rows = cursor.fetchall()
+
+            for r in rows:
+                ev = ProcessEvent(
+                    event_id=r["event_id"],
+                    timestamp=r["timestamp"],
+                    creation_time=r["creation_time"] or r["timestamp"],
+                    pid=r["pid"],
+                    ppid=r["ppid"],
+                    image=r["image"],
+                    command_line=r["command_line"],
+                    user=r["user"],
+                    parent_image=r["parent_image"],
+                    integrity_level=r["integrity_level"],
+                )
+                events.append(ev)
+        except sqlite3.Error as exc:
+            logger.error("Failed to query events around %s: %s", target_timestamp, exc)
+
+        return events
 
     def get_recent_alerts(self, limit: int = 50) -> list[dict[str, Any]]:
         """Retrieve the most recent alerts from the database.

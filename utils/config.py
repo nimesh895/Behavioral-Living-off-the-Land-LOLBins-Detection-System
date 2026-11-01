@@ -45,10 +45,12 @@ class EngineConfig:
 
 @dataclass(slots=True)
 class OutputConfig:
-    """Alert output and reporting settings."""
+    """Alert output, timeline, and reporting settings."""
 
     console_alerts: bool = True
     json_log_path: str = "data/alerts.jsonl"
+    markdown_reports_dir: str = "reports"
+    timeline_window_seconds: float = 300.0
 
 
 @dataclass(slots=True)

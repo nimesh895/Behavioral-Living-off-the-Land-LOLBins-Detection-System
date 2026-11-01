@@ -29,3 +29,6 @@ engine:
 output:
   console_alerts: true
   json_log_path: "data/alerts.jsonl"
+  markdown_reports_dir: "reports"
+  # Timeline reconstruction window (± 5-10 minutes around alert timestamp)
+  timeline_window_seconds: 300.0
