@@ -1,63 +1,147 @@
+# Sequential Behavioral Attack Chain Detection Rules
+# Correlates multi-event attack techniques over short-term sliding windows (2–5 minutes)
+
 rules:
-  - id: "SEQ-LOLBIN-001"
+  # ===========================================================================
+  # 1. Download then Execute Chain
+  # ===========================================================================
+  - id: "SEQ-CHAIN-001"
     type: "sequential"
-    name: "LOLBin Remote Download Cradle Followed by Payload Execution"
-    description: "Detects a network-based download cradle (e.g. certutil/bitsadmin) followed by LOLBin scriptlet or binary execution by the same user within 5 minutes."
+    name: "Attack Chain: LOLBin Download Cradle Followed by Payload Execution"
+    description: "Detects a network ingress transfer via certutil, bitsadmin, or PowerShell download cradles followed by the execution of a newly staged payload, script, or LOLBin proxy within 5 minutes under the same user session."
     severity: "critical"
     mitre_attack:
-      - "T1105"
-      - "T1218"
-      - "T1059"
+      - "T1105"      # Ingress Tool Transfer
+      - "T1204.002"  # User Execution: Malicious File
+      - "T1218"      # System Binary Proxy Execution
+      - "T1059"      # Command and Scripting Interpreter
     correlation:
       key: "user"
-      within_seconds: 300
+      within_seconds: 300  # 5-minute sliding correlation window
       stages:
-        - name: "Remote Payload Download"
+        - name: "Ingress Download Cradle"
           target_images:
             - "certutil.exe"
             - "bitsadmin.exe"
+            - "powershell.exe"
+            - "pwsh.exe"
           command_line_contains_any:
             - "-urlcache"
             - "/urlcache"
             - "/transfer"
             - "-transfer"
+            - "/addfile"
+            - "-addfile"
+            - "downloadstring"
+            - "downloadfile"
+            - "invoke-webrequest"
+            - "iwr "
+            - "net.webclient"
+            - "curl "
+            - "wget "
+          command_line_regex:
+            - "(?i)https?://"
 
-        - name: "Suspicious Payload Execution"
+        - name: "Dropped Payload or Proxy Execution"
           target_images:
             - "mshta.exe"
             - "regsvr32.exe"
             - "rundll32.exe"
-            - "wscript.exe"
             - "cscript.exe"
+            - "wscript.exe"
+            - "cmd.exe"
+            - "powershell.exe"
+            - "pwsh.exe"
+            - "wmic.exe"
+          command_line_regex:
+            - "(?i)(appdata|temp|programdata|users\\\\public|downloads).*(payload|update|stage|script|backdoor|setup|drop|\\.exe|\\.dll|\\.bat|\\.ps1|\\.vbs|\\.js|\\.hta|\\.sct)"
+            - "(?i)(javascript|vbscript):"
+            - "(?i)[-/]i:https?://"
+            - "(?i)scrobj\\.dll"
 
-  - id: "SEQ-LOLBIN-002"
+  # ===========================================================================
+  # 2. Encoded PowerShell Execution Following a LOLBin
+  # ===========================================================================
+  - id: "SEQ-CHAIN-002"
     type: "sequential"
-    name: "Discovery Reconnaissance Followed by Process Injection / Execution"
-    description: "Detects rapid system reconnaissance via whoami/net/tasklist followed by execution of PowerShell or CMD within 3 minutes."
-    severity: "high"
+    name: "Attack Chain: Encoded PowerShell Invocation Following LOLBin Activity"
+    description: "Detects native Windows LOLBin execution (e.g. certutil, bitsadmin, mshta, regsvr32, rundll32, wmic) followed by an obfuscated, encoded PowerShell command under the same user session within 3 minutes."
+    severity: "critical"
     mitre_attack:
-      - "T1033"
-      - "T1087"
-      - "T1059"
+      - "T1059.001"  # PowerShell
+      - "T1027"      # Obfuscated Files or Information
+      - "T1218"      # System Binary Proxy Execution
     correlation:
       key: "user"
-      within_seconds: 180
+      within_seconds: 180  # 3-minute correlation window
       stages:
-        - name: "Discovery & Reconnaissance"
+        - name: "Initial LOLBin Staging Activity"
           target_images:
-            - "whoami.exe"
-            - "net.exe"
-            - "net1.exe"
-            - "tasklist.exe"
-            - "systeminfo.exe"
+            - "certutil.exe"
+            - "bitsadmin.exe"
+            - "mshta.exe"
+            - "regsvr32.exe"
+            - "rundll32.exe"
+            - "wmic.exe"
+            - "cscript.exe"
+            - "wscript.exe"
+            - "msiexec.exe"
+            - "installutil.exe"
+            - "forfiles.exe"
+            - "pcalua.exe"
 
-        - name: "Command Shell / Execution Spawn"
+        - name: "Encoded PowerShell Execution"
           target_images:
             - "powershell.exe"
             - "pwsh.exe"
-            - "cmd.exe"
           command_line_contains_any:
             - "-enc"
-            - "-w hidden"
-            - "invoke-"
-            - "/c "
+            - "-encodedcommand"
+            - "frombase64string"
+          command_line_regex:
+            - "(?i)-e(nc(odedcommand)?)?\\s+[A-Za-z0-9+/=]{8,}"
+            - "(?i)-w(indowstyle)?\\s+hidden.*-e"
+
+  # ===========================================================================
+  # 3. Cascade Process Execution: cmd.exe → powershell.exe → LOLBin Chain
+  # ===========================================================================
+  - id: "SEQ-CHAIN-003"
+    type: "sequential"
+    name: "Attack Chain: Cascading Shell Execution (cmd.exe -> powershell.exe -> LOLBin)"
+    description: "Detects a multi-stage process execution cascade where cmd.exe spawns powershell.exe, which subsequently invokes a Living-off-the-Land binary within 3 minutes along the same process lineage."
+    severity: "high"
+    mitre_attack:
+      - "T1059.003"  # Windows Command Shell
+      - "T1059.001"  # PowerShell
+      - "T1218"      # System Binary Proxy Execution
+    correlation:
+      key: "process_tree"
+      within_seconds: 180  # 3-minute process tree correlation window
+      stages:
+        - name: "Initial Command Shell (cmd.exe)"
+          target_images:
+            - "cmd.exe"
+
+        - name: "Intermediate PowerShell Shell"
+          target_images:
+            - "powershell.exe"
+            - "pwsh.exe"
+          suspicious_parents:
+            - "cmd.exe"
+
+        - name: "Terminal LOLBin Invocation"
+          target_images:
+            - "mshta.exe"
+            - "regsvr32.exe"
+            - "rundll32.exe"
+            - "certutil.exe"
+            - "bitsadmin.exe"
+            - "wmic.exe"
+            - "cscript.exe"
+            - "wscript.exe"
+            - "msiexec.exe"
+            - "installutil.exe"
+            - "forfiles.exe"
+          suspicious_parents:
+            - "powershell.exe"
+            - "pwsh.exe"

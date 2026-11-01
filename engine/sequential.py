@@ -107,7 +107,7 @@ class SequentialRule(BaseRule):
             severity: Severity level.
             stages: Ordered sequence of SequenceStage objects (minimum 2 stages).
             mitre_attack: List of MITRE ATT&CK technique IDs.
-            correlation_key_type: Method to correlate events ('user', 'parent_child', or 'global').
+            correlation_key_type: Method to correlate events ('user', 'process_tree', 'parent_child', or 'global').
             within_seconds: Maximum time window for the entire sequence to complete.
             enabled: Whether this rule is active.
         """
@@ -127,14 +127,11 @@ class SequentialRule(BaseRule):
         self.within_seconds = max(10.0, within_seconds)
 
     def resolve_correlation_key(self, event: ProcessEvent) -> str:
-        """Derive the correlation partition key for an event.
-
-        Subclasses may override this method for custom correlation partitioning.
-        """
-        if self.correlation_key_type == "user":
+        """Derive the correlation partition key for an event."""
+        if self.correlation_key_type in ("process_tree", "parent_child"):
+            return f"tree:{event.pid}"
+        elif self.correlation_key_type == "user":
             return f"user:{event.user.upper()}"
-        elif self.correlation_key_type == "parent_child":
-            return f"pid_branch:{event.ppid or event.pid}"
         return "global:system"
 
     def evaluate(
@@ -144,27 +141,43 @@ class SequentialRule(BaseRule):
         if not self.enabled:
             return None
 
-        correlation_key = self.resolve_correlation_key(event)
-        active_track = state.get_sequence_track(self.rule_id, correlation_key)
-
         now = time.time()
+        is_tree_corr = self.correlation_key_type in ("process_tree", "parent_child")
 
-        # Case 1: No active sequence in-flight for this correlation key
+        # 1. Locate active track
+        active_track: SequenceTrack | None = None
+        if is_tree_corr:
+            ancestors = state.get_process_ancestors(event.pid)
+            ancestor_pids = {a.pid for a in ancestors}
+            active_track = state.find_process_tree_track(
+                self.rule_id, event.ppid, ancestor_pids
+            )
+        else:
+            correlation_key = self.resolve_correlation_key(event)
+            active_track = state.get_sequence_track(self.rule_id, correlation_key)
+
+        # 2. Case: No active sequence in-flight
         if active_track is None:
             first_stage = self.stages[0]
             matched, indicators = first_stage.matches(event)
             if matched:
+                key = (
+                    f"tree:{event.pid}"
+                    if is_tree_corr
+                    else self.resolve_correlation_key(event)
+                )
                 logger.debug(
                     "[%s] Stage 1/%d ('%s') matched for %s",
                     self.rule_id,
                     len(self.stages),
                     first_stage.name,
-                    correlation_key,
+                    key,
                 )
                 new_track = SequenceTrack(
                     rule_id=self.rule_id,
-                    correlation_key=correlation_key,
+                    correlation_key=key,
                     matched_events=[event],
+                    associated_pids={event.pid},
                     current_stage_index=0,
                     started_at=now,
                     expires_at=now + self.within_seconds,
@@ -172,26 +185,28 @@ class SequentialRule(BaseRule):
                 state.set_sequence_track(new_track)
             return None
 
-        # Case 2: Sequence in-flight - evaluate next expected stage
+        # 3. Case: Sequence in-flight - evaluate next expected stage
         next_stage_index = active_track.current_stage_index + 1
         expected_stage = self.stages[next_stage_index]
         matched, stage_indicators = expected_stage.matches(event)
 
         if matched:
             active_track.matched_events.append(event)
+            active_track.associated_pids.add(event.pid)
             active_track.current_stage_index = next_stage_index
+
             logger.debug(
                 "[%s] Advanced to Stage %d/%d ('%s') for %s",
                 self.rule_id,
                 next_stage_index + 1,
                 len(self.stages),
                 expected_stage.name,
-                correlation_key,
+                active_track.correlation_key,
             )
 
-            # Check if sequence is now complete
+            # Check if all stages are completed
             if next_stage_index == len(self.stages) - 1:
-                state.clear_sequence_track(self.rule_id, correlation_key)
+                state.clear_sequence_track(self.rule_id, active_track.correlation_key)
                 duration = round(now - active_track.started_at, 2)
 
                 all_matched_events = list(active_track.matched_events)
@@ -202,7 +217,7 @@ class SequentialRule(BaseRule):
 
                 context = {
                     "detection_type": "sequential",
-                    "correlation_key": correlation_key,
+                    "correlation_key": active_track.correlation_key,
                     "correlation_type": self.correlation_key_type,
                     "duration_seconds": duration,
                     "within_window_seconds": self.within_seconds,
@@ -224,15 +239,16 @@ class SequentialRule(BaseRule):
                     additional_context=context,
                 )
 
-            # Not yet complete, store updated progression
+            # Not yet complete, save updated track
             state.set_sequence_track(active_track)
             return None
 
-        # If incoming event matches Stage 0 again, optionally refresh track
+        # If incoming event matches Stage 0 again, refresh/restart track
         first_stage = self.stages[0]
         matched_restart, _ = first_stage.matches(event)
         if matched_restart:
             active_track.matched_events = [event]
+            active_track.associated_pids = {event.pid}
             active_track.current_stage_index = 0
             active_track.started_at = now
             active_track.expires_at = now + self.within_seconds

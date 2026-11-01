@@ -19,6 +19,7 @@ class SequenceTrack:
     rule_id: str
     correlation_key: str
     matched_events: list[ProcessEvent] = field(default_factory=list)
+    associated_pids: set[int] = field(default_factory=set)
     current_stage_index: int = 0
     started_at: float = field(default_factory=time.time)
     expires_at: float = 0.0
@@ -165,6 +166,23 @@ class CorrelationState:
             del self._sequence_tracks[(rule_id, correlation_key)]
             return None
         return track
+
+    def find_process_tree_track(
+        self, rule_id: str, ppid: int, ancestor_pids: set[int] | None = None
+    ) -> SequenceTrack | None:
+        """Find an in-flight sequence track for a rule where the process is in the same process tree."""
+        targets = {ppid}
+        if ancestor_pids:
+            targets.update(ancestor_pids)
+
+        for (r_id, key), track in list(self._sequence_tracks.items()):
+            if r_id == rule_id:
+                if track.is_expired:
+                    del self._sequence_tracks[(r_id, key)]
+                    continue
+                if track.associated_pids & targets:
+                    return track
+        return None
 
     def set_sequence_track(self, track: SequenceTrack) -> None:
         """Store or update an active sequence tracking state."""

