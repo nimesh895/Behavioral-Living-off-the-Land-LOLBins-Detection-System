@@ -7,7 +7,7 @@ import sys
 from types import FrameType
 
 from collector.process_collector import ProcessCollector
-from engine.detector import BehavioralEngine
+from engine.detector import DetectionEngine
 from output.notifier import AlertDispatcher
 from rules.loader import RuleLoader
 from storage.database import DatabaseManager
@@ -66,12 +66,15 @@ def main() -> int:
         )
         return 0
 
-    # Load Behavioral Rules & Initialize Engine
+    # Load Behavioral Rules (YAML definitions and Python rule modules)
     rules = RuleLoader.load_rules_from_directory(config.engine.rules_directory)
-    engine = BehavioralEngine(
+
+    # Initialize Modular Detection Engine with Short-Term State (5-10 minutes)
+    engine = DetectionEngine(
         rules=rules,
         enable_heuristics=config.engine.enable_heuristic_scoring,
         min_severity=config.engine.alert_threshold_severity,
+        window_seconds=config.engine.window_seconds,
     )
 
     # Initialize Output Dispatcher & Process Collector

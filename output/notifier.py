@@ -50,23 +50,37 @@ class AlertDispatcher:
             self._write_json_alert(alert)
 
     def _print_console_alert(self, alert: Alert) -> None:
-        """Format and print an alert banner to the console."""
+        """Format and print an alert banner with single/multi-event context."""
         color = self._SEVERITY_COLORS.get(alert.severity, "")
         reset = self._RESET_COLOR if color else ""
         mitre_str = ", ".join(alert.mitre_attack) if alert.mitre_attack else "N/A"
         indicators_str = ", ".join(alert.matched_indicators)
 
-        banner = (
-            f"\n{color}[ALERT: {alert.severity.upper()}] {alert.rule_id} - {alert.rule_name}{reset}\n"
-            f"  Timestamp       : {alert.timestamp}\n"
-            f"  MITRE ATT&CK    : {mitre_str}\n"
-            f"  Process (PID)   : {alert.event.image} (PID: {alert.event.pid}, PPID: {alert.event.ppid})\n"
-            f"  Parent Process  : {alert.event.parent_image}\n"
-            f"  Command Line    : {alert.event.command_line}\n"
-            f"  User / Integrity: {alert.event.user} ({alert.event.integrity_level})\n"
-            f"  Indicators      : {indicators_str}\n"
-            f"  Description     : {alert.description}\n"
-        )
+        banner_lines = [
+            f"\n{color}[ALERT: {alert.severity.upper()}] {alert.rule_id} - {alert.rule_name}{reset}",
+            f"  Timestamp       : {alert.timestamp}",
+            f"  MITRE ATT&CK    : {mitre_str}",
+            f"  Trigger Process : {alert.event.image} (PID: {alert.event.pid}, PPID: {alert.event.ppid})",
+            f"  Parent Process  : {alert.event.parent_image}",
+            f"  Command Line    : {alert.event.command_line}",
+            f"  User / Integrity: {alert.event.user} ({alert.event.integrity_level})",
+            f"  Indicators      : {indicators_str}",
+            f"  Description     : {alert.description}",
+        ]
+
+        # Multi-event correlation context display
+        if alert.context.get("is_sequential"):
+            duration = alert.context.get("duration_seconds", "N/A")
+            corr_key = alert.context.get("correlation_key", "N/A")
+            banner_lines.append(f"  Sequence Flow   : Multi-event correlated ({duration}s window, key: {corr_key})")
+
+            timeline = alert.context.get("timeline", [])
+            for idx, item in enumerate(timeline, start=1):
+                banner_lines.append(
+                    f"    [{idx}] {item.get('timestamp')} | PID {item.get('pid')} | {item.get('image')} | {item.get('command_line')}"
+                )
+
+        banner = "\n".join(banner_lines) + "\n"
         print(banner, flush=True)
 
     def _write_json_alert(self, alert: Alert) -> None:

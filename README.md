@@ -2,21 +2,25 @@
 
 A modular Windows Behavioral Living-off-the-Land (LOLBins) Detection System built for Python 3.12+.
 
-## Features
+## Key Features
 
 - **Telemetry Collector**:
   - Prefers **Sysmon Event ID 1** (Process Creation) via Windows Event Log API (`Microsoft-Windows-Sysmon/Operational`).
-  - Automatically detects Sysmon availability and channel permissions; falls back gracefully to polling via `psutil`.
+  - Automatically checks Sysmon availability and channel permissions; falls back gracefully to polling via `psutil`.
   - Captures: `PID`, `PPID`, `Image`, `CommandLine`, `User`, `ParentImage`, `CreationTime`, and `IntegrityLevel` (via Win32 Security Token API or heuristic account context).
   - Handles permissions (`AccessDenied`, missing debug privileges) on a per-process level without crashing.
   - Automatically persists all process events directly into SQLite.
   - Continuous execution until interrupted or signaled to stop.
-- **Behavioral Detection Engine**:
-  - Rules mapped to MITRE ATT&CK techniques (T1105, T1140, T1059, T1218, T1197, T1047, etc.).
-  - Obfuscation heuristics for command lines (excessive carets/backticks, encoded Base64 strings, environment variable slicing).
-- **Storage & Reporting**:
+- **Modular Detection Engine**:
+  - **Single-Event Rules**: Fast pattern evaluation (images, command lines, regexes, parent images, integrity levels).
+  - **Sequential (Multi-Event) Rules**: Detects ordered sequences of correlated actions (e.g. download cradle -> LOLBin execution, recon -> privilege escalation) within a sliding time window.
+  - **Short-Term Correlation State**: Maintains a 5–10 minute in-memory sliding window indexed by `user`, `pid` (process lineage/ancestors), and `image`, with automated TTL eviction.
+  - **Dual Rule Formats**: Add rules effortlessly via declarative **YAML** files or extensible **Python** rule classes (`BaseRule`, `SingleEventRule`, `SequentialRule`).
+  - **Obfuscation Heuristics**: Analyzes command lines for generic living-off-the-land evasion (excessive caret/backtick escaping, encoded payloads, variable slicing).
+- **Structured Alerts & Storage**:
+  - Emits rich alerts with full context: trigger process, matched indicators, correlated multi-event timeline, sequence duration, and MITRE ATT&CK technique IDs.
   - SQLite backend with WAL mode and foreign key constraints.
-  - Formatted console alert banners and JSONL alert file output.
+  - Formatted color console alert banners and JSONL alert file output.
 
 ## Project Structure
 
@@ -28,13 +32,21 @@ lolbins-detector/
 │   ├── sysmon_collector.py     # Sysmon Event ID 1 subscriber and XML parser
 │   └── psutil_collector.py     # psutil polling with Win32 Token Integrity inspection
 ├── engine/
-│   ├── __init__.py
-│   └── detector.py             # Behavioral rule matching & command-line obfuscation heuristics
+│   ├── __init__.py             # Engine exports
+│   ├── base.py                 # Abstract BaseRule & DetectionResult classes
+│   ├── state.py                # CorrelationState (short-term 5-10 min sliding window & indexes)
+│   ├── single_event.py         # SingleEventRule implementation
+│   ├── sequential.py           # SequentialRule & SequenceStage multi-event state machine
+│   └── detector.py             # DetectionEngine orchestrating rules & heuristics
 ├── rules/
 │   ├── __init__.py
-│   ├── loader.py               # YAML rule parser and validator
-│   └── definitions/
-│       └── core_lolbins.yaml   # Behavioral detection rules mapped to MITRE ATT&CK
+│   ├── loader.py               # Unified loader for YAML & Python rule files
+│   ├── definitions/
+│   │   ├── core_lolbins.yaml   # Single-event YAML rules mapped to MITRE ATT&CK
+│   │   └── sequential_lolbins.yaml # Multi-event correlation YAML rules
+│   └── python_rules/
+│       ├── example_sequential_rule.py # Concrete Python SequentialRule implementation
+│       └── example_single_rule.py     # Concrete Python BaseRule with lineage inspection
 ├── storage/
 │   ├── __init__.py
 │   ├── database.py             # SQLite database manager
@@ -52,34 +64,78 @@ lolbins-detector/
 └── main.py                     # Application entry point
 ```
 
-## Requirements & Installation
+## Adding Rules
 
-Requires **Python 3.12+**.
+### 1. YAML Rules
+Place `.yaml` files in `rules/`:
 
-```bash
-pip install -r requirements.txt
+**Single-Event Rule:**
+```yaml
+rules:
+  - id: "LOLBIN-001"
+    name: "Certutil Remote Payload Download"
+    description: "Detects certutil downloading files."
+    severity: "high"
+    mitre_attack: ["T1105"]
+    detection:
+      target_images: ["certutil.exe"]
+      command_line_contains_any: ["-urlcache", "/urlcache"]
+```
+
+**Sequential Multi-Event Rule:**
+```yaml
+rules:
+  - id: "SEQ-001"
+    type: "sequential"
+    name: "Certutil Download Followed by Mshta Execution"
+    description: "Detects download cradle followed by script execution within 5 minutes."
+    severity: "critical"
+    mitre_attack: ["T1105", "T1218.005"]
+    correlation:
+      key: "user"
+      within_seconds: 300
+      stages:
+        - name: "Download Cradle"
+          target_images: ["certutil.exe"]
+          command_line_contains_any: ["-urlcache"]
+        - name: "Execution"
+          target_images: ["mshta.exe"]
+```
+
+### 2. Python Rules
+Create a `.py` file under `rules/` subclassing `BaseRule`, `SingleEventRule`, or `SequentialRule`:
+
+```python
+from engine.sequential import SequenceStage, SequentialRule
+from utils.models import Severity
+
+class CustomSequenceRule(SequentialRule):
+    def __init__(self):
+        super().__init__(
+            rule_id="PY-SEQ-EXAMPLE",
+            name="Download to Execution Chain",
+            description="Custom Python correlation rule",
+            severity=Severity.HIGH,
+            stages=[
+                SequenceStage(name="Stage 1", target_images=["certutil.exe"]),
+                SequenceStage(name="Stage 2", target_images=["regsvr32.exe"]),
+            ],
+            correlation_key_type="user",
+            within_seconds=300.0,
+        )
+
+RULES = [CustomSequenceRule()]
 ```
 
 ## Usage
 
-### Run with Automatic Collector Selection (Sysmon -> psutil fallback)
 ```bash
+# Run detection pipeline
 python main.py
-```
 
-### Force a Specific Collector Mode
-```bash
-# Force Sysmon Event ID 1 collection
-python main.py --mode sysmon
-
-# Force psutil polling collection
-python main.py --mode psutil_polling
-
-# Run simulated mock events for test verification
+# Test with simulated single and multi-event telemetry
 python main.py --mode mock
-```
 
-### View Database Event and Alert Counts
-```bash
+# Inspect database statistics
 python main.py --stats
 ```

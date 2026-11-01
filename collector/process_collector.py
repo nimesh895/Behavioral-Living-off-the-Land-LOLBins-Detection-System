@@ -169,8 +169,9 @@ class ProcessCollector:
                 logger.error("Failed to persist event (PID %d) to SQLite: %s", event.pid, exc)
 
     def _stream_mock_events(self) -> Iterator[ProcessEvent]:
-        """Yield synthetic Windows process creation events for testing."""
+        """Yield synthetic Windows process creation events for testing single & sequential rules."""
         sample_events = [
+            # 1. Benign background service
             ProcessEvent(
                 pid=4120,
                 ppid=1044,
@@ -181,6 +182,7 @@ class ProcessCollector:
                 integrity_level="System",
                 creation_time=datetime.now(timezone.utc).isoformat(),
             ),
+            # 2. Stage 1: LOLBin download cradle via certutil
             ProcessEvent(
                 pid=6832,
                 ppid=3912,
@@ -194,6 +196,18 @@ class ProcessCollector:
                 integrity_level="Medium",
                 creation_time=datetime.now(timezone.utc).isoformat(),
             ),
+            # 3. Stage 2: Suspicious scriptlet execution by same user completing SEQ-LOLBIN-001
+            ProcessEvent(
+                pid=7100,
+                ppid=6832,
+                image=r"C:\Windows\System32\mshta.exe",
+                command_line=r"mshta.exe vbscript:Close(Execute(\"CreateObject(\"\"WScript.Shell\"\").Run \"\"powershell\"\"\"))",
+                user=r"WORKSTATION\StandardUser",
+                parent_image=r"C:\Windows\System32\cmd.exe",
+                integrity_level="Medium",
+                creation_time=datetime.now(timezone.utc).isoformat(),
+            ),
+            # 4. Office parent spawning hidden encoded PowerShell
             ProcessEvent(
                 pid=7416,
                 ppid=5200,
@@ -207,6 +221,7 @@ class ProcessCollector:
                 integrity_level="Medium",
                 creation_time=datetime.now(timezone.utc).isoformat(),
             ),
+            # 5. Squiblydoo regsvr32 execution
             ProcessEvent(
                 pid=8104,
                 ppid=6120,

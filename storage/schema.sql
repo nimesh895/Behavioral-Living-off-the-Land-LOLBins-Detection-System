@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS alerts (
     description TEXT NOT NULL,
     mitre_attack TEXT NOT NULL,        -- JSON array of MITRE technique IDs
     matched_indicators TEXT NOT NULL,  -- JSON array of matched behavioral indicators
+    context TEXT DEFAULT '{}',         -- JSON object containing correlation & multi-event context
     event_id TEXT NOT NULL,
     pid INTEGER NOT NULL,
     ppid INTEGER NOT NULL,

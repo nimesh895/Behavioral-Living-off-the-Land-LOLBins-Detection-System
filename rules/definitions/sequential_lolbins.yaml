@@ -1,0 +1,63 @@
+rules:
+  - id: "SEQ-LOLBIN-001"
+    type: "sequential"
+    name: "LOLBin Remote Download Cradle Followed by Payload Execution"
+    description: "Detects a network-based download cradle (e.g. certutil/bitsadmin) followed by LOLBin scriptlet or binary execution by the same user within 5 minutes."
+    severity: "critical"
+    mitre_attack:
+      - "T1105"
+      - "T1218"
+      - "T1059"
+    correlation:
+      key: "user"
+      within_seconds: 300
+      stages:
+        - name: "Remote Payload Download"
+          target_images:
+            - "certutil.exe"
+            - "bitsadmin.exe"
+          command_line_contains_any:
+            - "-urlcache"
+            - "/urlcache"
+            - "/transfer"
+            - "-transfer"
+
+        - name: "Suspicious Payload Execution"
+          target_images:
+            - "mshta.exe"
+            - "regsvr32.exe"
+            - "rundll32.exe"
+            - "wscript.exe"
+            - "cscript.exe"
+
+  - id: "SEQ-LOLBIN-002"
+    type: "sequential"
+    name: "Discovery Reconnaissance Followed by Process Injection / Execution"
+    description: "Detects rapid system reconnaissance via whoami/net/tasklist followed by execution of PowerShell or CMD within 3 minutes."
+    severity: "high"
+    mitre_attack:
+      - "T1033"
+      - "T1087"
+      - "T1059"
+    correlation:
+      key: "user"
+      within_seconds: 180
+      stages:
+        - name: "Discovery & Reconnaissance"
+          target_images:
+            - "whoami.exe"
+            - "net.exe"
+            - "net1.exe"
+            - "tasklist.exe"
+            - "systeminfo.exe"
+
+        - name: "Command Shell / Execution Spawn"
+          target_images:
+            - "powershell.exe"
+            - "pwsh.exe"
+            - "cmd.exe"
+          command_line_contains_any:
+            - "-enc"
+            - "-w hidden"
+            - "invoke-"
+            - "/c "

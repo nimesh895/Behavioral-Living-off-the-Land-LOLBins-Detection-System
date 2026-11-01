@@ -1,18 +1,25 @@
-"""Behavioral detection engine evaluating process events against rules and heuristics."""
+"""Modular detection engine orchestrating single-event and sequential correlation rules."""
 
+from collections.abc import Sequence
 import logging
 import re
+from typing import Any
 
-from rules.loader import DetectionRule
+from engine.base import BaseRule
+from engine.state import CorrelationState
 from utils.models import Alert, ProcessEvent, Severity
 
 logger = logging.getLogger("lolbins-detector.engine")
 
 
-class BehavioralEngine:
-    """Evaluates Windows process creation events against LOLBin rules and heuristics."""
+class DetectionEngine:
+    """Modular behavioral detection engine.
 
-    # Common obfuscation patterns observed in Living-off-the-Land command lines
+    Orchestrates single-event detection rules, sequential (multi-event) correlation
+    rules, and command-line obfuscation heuristics over a short-term sliding window.
+    """
+
+    # Generic LOLBin obfuscation patterns observed in living-off-the-land attacks
     _OBFUSCATION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
         ("Excessive caret (^) escaping", re.compile(r"(\^[^\s]){4,}")),
         ("Excessive backtick (`) escaping", re.compile(r"(`[^\s]){4,}")),
@@ -49,47 +56,69 @@ class BehavioralEngine:
 
     def __init__(
         self,
-        rules: list[DetectionRule],
+        rules: Sequence[BaseRule] | None = None,
         enable_heuristics: bool = True,
         min_severity: str = "low",
+        window_seconds: float = 600.0,
     ) -> None:
-        """Initialize the behavioral detection engine.
+        """Initialize the detection engine.
 
         Args:
-            rules: List of loaded DetectionRule objects.
-            enable_heuristics: Whether to run command-line obfuscation heuristics.
-            min_severity: Minimum severity threshold for emitting alerts.
+            rules: Sequence of BaseRule instances (single-event or sequential).
+            enable_heuristics: Whether to run generic command-line obfuscation checks.
+            min_severity: Minimum alert severity threshold (low, medium, high, critical).
+            window_seconds: Short-term correlation state duration in seconds (default: 600s / 10 min).
         """
-        self.rules = rules
+        self.rules: list[BaseRule] = list(rules or [])
         self.enable_heuristics = enable_heuristics
         self.min_severity_weight = Severity.weight(min_severity)
 
-    def evaluate(self, event: ProcessEvent) -> list[Alert]:
-        """Evaluate a single process creation event and return any triggered alerts.
+        # Correlation state maintaining 5-10 minute sliding window
+        self.state = CorrelationState(window_seconds=window_seconds)
+
+        logger.info(
+            "Initialized DetectionEngine with %d rules (correlation window: %.0fs, min severity: %s)",
+            len(self.rules),
+            window_seconds,
+            min_severity,
+        )
+
+    def register_rule(self, rule: BaseRule) -> None:
+        """Add a detection rule to the engine dynamically.
 
         Args:
-            event: The ProcessEvent to analyze.
+            rule: A BaseRule instance (single-event or sequential).
+        """
+        self.rules.append(rule)
+        logger.debug("Registered rule '%s' (%s)", rule.rule_id, rule.name)
+
+    def evaluate(self, event: ProcessEvent) -> list[Alert]:
+        """Evaluate an incoming process creation event against all rules and heuristics.
+
+        Args:
+            event: The incoming ProcessEvent.
 
         Returns:
             List of triggered Alert objects meeting the severity threshold.
         """
+        # 1. Update correlation state with the incoming event
+        self.state.add_event(event)
+
         alerts: list[Alert] = []
 
+        # 2. Evaluate all registered rules (single-event & sequential)
         for rule in self.rules:
-            matched, indicators = self._matches_rule(event, rule)
-            if matched and Severity.weight(rule.severity) >= self.min_severity_weight:
-                alerts.append(
-                    Alert(
-                        rule_id=rule.id,
-                        rule_name=rule.name,
-                        severity=rule.severity,
-                        description=rule.description,
-                        mitre_attack=rule.mitre_attack,
-                        event=event,
-                        matched_indicators=indicators,
-                    )
-                )
+            if not rule.enabled:
+                continue
 
+            try:
+                alert = rule.evaluate(event, self.state)
+                if alert and Severity.weight(alert.severity) >= self.min_severity_weight:
+                    alerts.append(alert)
+            except Exception as exc:
+                logger.error("Error evaluating rule '%s': %s", rule.rule_id, exc)
+
+        # 3. Evaluate generic obfuscation heuristics if enabled
         if self.enable_heuristics:
             heuristic_alert = self._evaluate_heuristics(event)
             if (
@@ -100,64 +129,8 @@ class BehavioralEngine:
 
         return alerts
 
-    def _matches_rule(
-        self, event: ProcessEvent, rule: DetectionRule
-    ) -> tuple[bool, list[str]]:
-        """Check whether an event satisfies all defined criteria of a rule."""
-        indicators: list[str] = []
-        image_name = event.image_name
-        parent_name = event.parent_image_name
-        cmd_lower = event.command_line.lower()
-        integrity_lower = event.integrity_level.lower()
-
-        # 1. Target image check
-        if rule.target_images:
-            if image_name not in rule.target_images:
-                return False, []
-            indicators.append(f"image={image_name}")
-
-        # 2. Suspicious parent check
-        if rule.suspicious_parents:
-            if parent_name not in rule.suspicious_parents:
-                return False, []
-            indicators.append(f"parent_image={parent_name}")
-
-        # 3. Required integrity level check
-        if rule.required_integrity_levels:
-            if integrity_lower not in rule.required_integrity_levels:
-                return False, []
-            indicators.append(f"integrity_level={event.integrity_level}")
-
-        # 4. Command line 'contains_all' check
-        if rule.command_line_contains_all:
-            for token in rule.command_line_contains_all:
-                if token not in cmd_lower:
-                    return False, []
-                indicators.append(f"cmdline_all:{token}")
-
-        # 5. Command line 'contains_any' and 'regex' checks
-        has_cmd_constraints = bool(
-            rule.command_line_contains_any or rule.command_line_regex
-        )
-        if has_cmd_constraints:
-            cmd_matched = False
-            for token in rule.command_line_contains_any:
-                if token in cmd_lower:
-                    cmd_matched = True
-                    indicators.append(f"cmdline_token:{token}")
-
-            for pattern in rule.command_line_regex:
-                if pattern.search(event.command_line):
-                    cmd_matched = True
-                    indicators.append(f"cmdline_regex:{pattern.pattern}")
-
-            if not cmd_matched:
-                return False, []
-
-        return bool(indicators), indicators
-
     def _evaluate_heuristics(self, event: ProcessEvent) -> Alert | None:
-        """Analyze LOLBin command lines for generic obfuscation and evasion patterns."""
+        """Analyze LOLBin command lines for obfuscation and evasion patterns."""
         if event.image_name not in self._MONITORED_LOLBINS:
             return None
 
@@ -181,4 +154,12 @@ class BehavioralEngine:
             mitre_attack=["T1027", "T1059"],
             event=event,
             matched_indicators=matched_heuristics,
+            context={
+                "detection_type": "heuristic",
+                "matched_heuristic_patterns": matched_heuristics,
+            },
         )
+
+
+# Alias for backward compatibility
+BehavioralEngine = DetectionEngine

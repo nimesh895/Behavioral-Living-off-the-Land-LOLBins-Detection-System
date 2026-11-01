@@ -19,9 +19,12 @@ storage:
   retention_days: 30
 
 engine:
-  rules_directory: "rules/definitions"
+  # Recursively loads all YAML definitions and Python rules (.py)
+  rules_directory: "rules"
   enable_heuristic_scoring: true
   alert_threshold_severity: "low"  # low, medium, high, critical
+  # Short-term correlation sliding window duration in seconds (5-10 minutes)
+  window_seconds: 600.0
 
 output:
   console_alerts: true

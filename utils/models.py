@@ -68,7 +68,7 @@ class ProcessEvent:
 
 @dataclass(slots=True)
 class Alert:
-    """Represents a security alert triggered by a detection rule."""
+    """Represents a security alert triggered by a single or multi-event detection rule."""
 
     rule_id: str
     rule_name: str
@@ -80,10 +80,11 @@ class Alert:
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    context: dict[str, Any] = field(default_factory=dict)
     alert_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     def to_dict(self) -> dict[str, Any]:
-        """Convert the alert and its nested event into a dictionary."""
+        """Convert the alert and its nested structures into a dictionary."""
         data = asdict(self)
         data["severity"] = str(self.severity)
         return data

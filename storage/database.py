@@ -46,11 +46,17 @@ class DatabaseManager:
         schema_sql = self.schema_path.read_text(encoding="utf-8")
         with self._get_connection() as conn:
             conn.executescript(schema_sql)
-            # Ensure backward compatibility if an existing database lacks creation_time
+            # Ensure backward compatibility migrations
             try:
                 conn.execute("ALTER TABLE process_events ADD COLUMN creation_time TEXT")
             except sqlite3.OperationalError:
-                pass  # Column already exists
+                pass
+
+            try:
+                conn.execute("ALTER TABLE alerts ADD COLUMN context TEXT DEFAULT '{}'")
+            except sqlite3.OperationalError:
+                pass
+
         logger.debug("Database initialized at %s", self.db_path)
 
     def insert_process_event(self, event: ProcessEvent) -> None:
@@ -96,9 +102,9 @@ class DatabaseManager:
         query = """
             INSERT OR IGNORE INTO alerts (
                 alert_id, timestamp, rule_id, rule_name, severity,
-                description, mitre_attack, matched_indicators, event_id,
+                description, mitre_attack, matched_indicators, context, event_id,
                 pid, ppid, image, command_line, user, parent_image, integrity_level
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
             alert.alert_id,
@@ -109,6 +115,7 @@ class DatabaseManager:
             alert.description,
             json.dumps(alert.mitre_attack),
             json.dumps(alert.matched_indicators),
+            json.dumps(alert.context),
             alert.event.event_id,
             alert.event.pid,
             alert.event.ppid,
@@ -147,6 +154,7 @@ class DatabaseManager:
             item = dict(row)
             item["mitre_attack"] = json.loads(item.get("mitre_attack", "[]"))
             item["matched_indicators"] = json.loads(item.get("matched_indicators", "[]"))
+            item["context"] = json.loads(item.get("context", "{}"))
             results.append(item)
         return results
 

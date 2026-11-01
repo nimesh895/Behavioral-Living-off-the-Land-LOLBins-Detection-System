@@ -19,7 +19,7 @@ class AppConfig:
 class CollectorConfig:
     """Process event collection settings."""
 
-    mode: str = "psutil_polling"
+    mode: str = "auto"
     poll_interval_seconds: float = 1.0
     ignore_images: list[str] = field(default_factory=list)
 
@@ -37,9 +37,10 @@ class StorageConfig:
 class EngineConfig:
     """Behavioral detection engine settings."""
 
-    rules_directory: str = "rules/definitions"
+    rules_directory: str = "rules"
     enable_heuristic_scoring: bool = True
     alert_threshold_severity: str = "low"
+    window_seconds: float = 600.0
 
 
 @dataclass(slots=True)
