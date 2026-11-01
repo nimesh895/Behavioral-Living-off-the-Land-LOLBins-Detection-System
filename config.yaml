@@ -1,0 +1,27 @@
+# Configuration for lolbins-detector
+
+app:
+  name: "lolbins-detector"
+  version: "1.0.0"
+  log_level: "INFO"
+
+collector:
+  # Supported modes: "wmi", "psutil_polling", "mock"
+  mode: "psutil_polling"
+  poll_interval_seconds: 1.0
+  # Filter out noisy trusted system paths if desired
+  ignore_images: []
+
+storage:
+  database_path: "data/lolbins_events.db"
+  store_all_events: true
+  retention_days: 30
+
+engine:
+  rules_directory: "rules/definitions"
+  enable_heuristic_scoring: true
+  alert_threshold_severity: "low"  # low, medium, high, critical
+
+output:
+  console_alerts: true
+  json_log_path: "data/alerts.jsonl"

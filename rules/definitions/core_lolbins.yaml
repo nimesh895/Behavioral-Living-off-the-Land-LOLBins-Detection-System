@@ -1,0 +1,147 @@
+rules:
+  - id: "LOLBIN-001"
+    name: "Certutil Remote Payload Download or Decode"
+    description: "Detects certutil.exe being used to download remote files or decode base64/hex payloads."
+    severity: "high"
+    mitre_attack:
+      - "T1105"
+      - "T1140"
+    detection:
+      target_images:
+        - "certutil.exe"
+      command_line_contains_any:
+        - "-urlcache"
+        - "/urlcache"
+        - "-decode"
+        - "/decode"
+        - "-decodehex"
+        - "/decodehex"
+        - "-verifyctl"
+        - "/verifyctl"
+
+  - id: "LOLBIN-002"
+    name: "PowerShell Encoded or Hidden Download Cradle"
+    description: "Detects PowerShell executing hidden, encoded, or web download cradles commonly used in fileless attacks."
+    severity: "high"
+    mitre_attack:
+      - "T1059.001"
+      - "T1027"
+    detection:
+      target_images:
+        - "powershell.exe"
+        - "pwsh.exe"
+      command_line_contains_any:
+        - "-enc"
+        - "-encodedcommand"
+        - "downloadstring"
+        - "downloadfile"
+        - "invoke-webrequest"
+        - " invoke-expression"
+        - "iex("
+        - "frombase64string"
+      command_line_regex:
+        - "(?i)-w(indowstyle)?\\s+hidden"
+
+  - id: "LOLBIN-003"
+    name: "Mshta Suspicious Script or Remote Execution"
+    description: "Detects mshta.exe executing inline VBScript/JScript or remote HTA payloads."
+    severity: "critical"
+    mitre_attack:
+      - "T1218.005"
+    detection:
+      target_images:
+        - "mshta.exe"
+      command_line_contains_any:
+        - "javascript:"
+        - "vbscript:"
+        - "http://"
+        - "https://"
+        - "about:"
+
+  - id: "LOLBIN-004"
+    name: "Regsvr32 Scrobj / Squiblydoo Execution"
+    description: "Detects regsvr32.exe loading remote COM scriptlets via scrobj.dll (Squiblydoo technique)."
+    severity: "critical"
+    mitre_attack:
+      - "T1218.010"
+    detection:
+      target_images:
+        - "regsvr32.exe"
+      command_line_contains_any:
+        - "scrobj.dll"
+        - "/i:http"
+        - "-i:http"
+
+  - id: "LOLBIN-005"
+    name: "Rundll32 Suspicious Inline or Script Execution"
+    description: "Detects rundll32.exe executing JavaScript, HTMLApplication, or unusual network/COM payloads."
+    severity: "high"
+    mitre_attack:
+      - "T1218.011"
+    detection:
+      target_images:
+        - "rundll32.exe"
+      command_line_contains_any:
+        - "javascript:"
+        - "mshtml,runhtmlapplication"
+        - "advpack.dll,launchinfsection"
+        - "ieadvpack.dll"
+        - "syssetup.dll,setupinfobjectinstallaction"
+        - "pcwutl.dll,launchapplication"
+
+  - id: "LOLBIN-006"
+    name: "Bitsadmin Suspicious File Transfer or Persistence"
+    description: "Detects bitsadmin.exe transferring remote files or setting notification commands."
+    severity: "high"
+    mitre_attack:
+      - "T1197"
+      - "T1105"
+    detection:
+      target_images:
+        - "bitsadmin.exe"
+      command_line_contains_any:
+        - "/transfer"
+        - "-transfer"
+        - "/addfile"
+        - "/setnotifycmdline"
+
+  - id: "LOLBIN-007"
+    name: "WMIC Process Call Create or Remote XSL Execution"
+    description: "Detects WMIC spawning processes or executing remote XSL stylesheets."
+    severity: "high"
+    mitre_attack:
+      - "T1047"
+      - "T1220"
+    detection:
+      target_images:
+        - "wmic.exe"
+      command_line_contains_any:
+        - "process call create"
+        - "/format:http"
+        - "/format:\"http"
+
+  - id: "LOLBIN-008"
+    name: "Office Application Spawning Command Interpreter or LOLBin"
+    description: "Detects Microsoft Office applications spawning shells or scripting utilities."
+    severity: "critical"
+    mitre_attack:
+      - "T1204.002"
+      - "T1059"
+    detection:
+      target_images:
+        - "cmd.exe"
+        - "powershell.exe"
+        - "pwsh.exe"
+        - "wscript.exe"
+        - "cscript.exe"
+        - "mshta.exe"
+        - "rundll32.exe"
+        - "regsvr32.exe"
+        - "certutil.exe"
+      suspicious_parents:
+        - "winword.exe"
+        - "excel.exe"
+        - "powerpnt.exe"
+        - "outlook.exe"
+        - "mspub.exe"
+        - "visio.exe"
