@@ -1,11 +1,41 @@
+# Core Behavioral Living-off-the-Land (LOLBins) Detection Rules
+# Mapped to MITRE ATT&CK Enterprise Framework
+
 rules:
+  # ---------------------------------------------------------------------------
+  # 1. Office Application Spawning LOLBins
+  # ---------------------------------------------------------------------------
   - id: "LOLBIN-001"
-    name: "Certutil Remote Payload Download or Decode"
-    description: "Detects certutil.exe being used to download remote files or decode base64/hex payloads."
+    name: "Office Application Spawning LOLBin Utilities"
+    description: "Detects Microsoft Office applications (Word, Excel, PowerPoint, Outlook) spawning native Windows Living-off-the-Land binaries (mshta.exe, regsvr32.exe, certutil.exe, rundll32.exe, bitsadmin.exe), commonly associated with malicious document exploits or macro payloads."
+    severity: "critical"
+    mitre_attack:
+      - "T1204.002"  # User Execution: Malicious File
+      - "T1059"      # Command and Scripting Interpreter
+      - "T1218"      # System Binary Proxy Execution
+    detection:
+      suspicious_parents:
+        - "winword.exe"
+        - "excel.exe"
+        - "powerpnt.exe"
+        - "outlook.exe"
+      target_images:
+        - "mshta.exe"
+        - "regsvr32.exe"
+        - "certutil.exe"
+        - "rundll32.exe"
+        - "bitsadmin.exe"
+
+  # ---------------------------------------------------------------------------
+  # 2. Suspicious Certutil Usage
+  # ---------------------------------------------------------------------------
+  - id: "LOLBIN-002"
+    name: "Suspicious Certutil Ingress Transfer or Payload Decode"
+    description: "Detects certutil.exe being utilized to download remote payloads from HTTP/HTTPS endpoints, query URL caches, or decode obfuscated Base64/Hex payloads on disk."
     severity: "high"
     mitre_attack:
-      - "T1105"
-      - "T1140"
+      - "T1105"  # Ingress Tool Transfer
+      - "T1140"  # Deobfuscate/Decode Files or Information
     detection:
       target_images:
         - "certutil.exe"
@@ -18,8 +48,86 @@ rules:
         - "/decodehex"
         - "-verifyctl"
         - "/verifyctl"
+      command_line_regex:
+        - "(?i)https?://"
+        - "(?i)[-/]f\\s+[-/]split"
 
-  - id: "LOLBIN-002"
+  # ---------------------------------------------------------------------------
+  # 3. Suspicious Bitsadmin Transfer
+  # ---------------------------------------------------------------------------
+  - id: "LOLBIN-003"
+    name: "Suspicious Bitsadmin Remote File Transfer"
+    description: "Detects bitsadmin.exe downloading files from external URLs or creating background transfer jobs, a common living-off-the-land technique for stealthy ingress payload staging."
+    severity: "high"
+    mitre_attack:
+      - "T1197"  # BITS Jobs
+      - "T1105"  # Ingress Tool Transfer
+    detection:
+      target_images:
+        - "bitsadmin.exe"
+      command_line_contains_any:
+        - "/transfer"
+        - "-transfer"
+        - "/addfile"
+        - "-addfile"
+        - "/create"
+        - "-create"
+        - "/setnotifycmdline"
+        - "-setnotifycmdline"
+      command_line_regex:
+        - "(?i)[-/](transfer|addfile|create)\\b.*https?://"
+        - "(?i)https?://"
+
+  # ---------------------------------------------------------------------------
+  # 4. Mshta with Suspicious Command Line
+  # ---------------------------------------------------------------------------
+  - id: "LOLBIN-004"
+    name: "Mshta Inline Script Execution or Remote HTA Execution"
+    description: "Detects mshta.exe executing inline JavaScript/VBScript protocols or loading remote HTML Applications (.hta) over HTTP/HTTPS, bypassing conventional application execution policies."
+    severity: "critical"
+    mitre_attack:
+      - "T1218.005"  # System Binary Proxy Execution: Mshta
+    detection:
+      target_images:
+        - "mshta.exe"
+      command_line_contains_any:
+        - "javascript:"
+        - "vbscript:"
+        - "about:"
+        - "http://"
+        - "https://"
+        - ".hta"
+      command_line_regex:
+        - "(?i)(javascript|vbscript|about):"
+        - "(?i)https?://.*(\\.[a-z0-9]{1,4}|/)"
+
+  # ---------------------------------------------------------------------------
+  # 5. Regsvr32 Proxy Execution Patterns
+  # ---------------------------------------------------------------------------
+  - id: "LOLBIN-005"
+    name: "Regsvr32 Proxy Execution Patterns (Squiblydoo)"
+    description: "Detects regsvr32.exe proxy execution patterns, including loading remote COM scriptlets via scrobj.dll, specifying remote network URLs with the /i: parameter, or executing with silent and unregister flags."
+    severity: "critical"
+    mitre_attack:
+      - "T1218.010"  # System Binary Proxy Execution: Regsvr32
+    detection:
+      target_images:
+        - "regsvr32.exe"
+      command_line_contains_any:
+        - "scrobj.dll"
+        - "/i:http:"
+        - "/i:https:"
+        - "-i:http:"
+        - "-i:https:"
+      command_line_regex:
+        - "(?i)[-/]i:https?://"
+        - "(?i)scrobj\\.dll"
+        - "(?i)[-/]s\\b.*[-/]u\\b.*[-/]i:"
+
+  # ---------------------------------------------------------------------------
+  # Complementary LOLBin Rules
+  # ---------------------------------------------------------------------------
+  - id: "LOLBIN-006"
     name: "PowerShell Encoded or Hidden Download Cradle"
     description: "Detects PowerShell executing hidden, encoded, or web download cradles commonly used in fileless attacks."
     severity: "high"
@@ -36,43 +144,13 @@ rules:
         - "downloadstring"
         - "downloadfile"
         - "invoke-webrequest"
-        - " invoke-expression"
+        - "invoke-expression"
         - "iex("
         - "frombase64string"
       command_line_regex:
         - "(?i)-w(indowstyle)?\\s+hidden"
 
-  - id: "LOLBIN-003"
-    name: "Mshta Suspicious Script or Remote Execution"
-    description: "Detects mshta.exe executing inline VBScript/JScript or remote HTA payloads."
-    severity: "critical"
-    mitre_attack:
-      - "T1218.005"
-    detection:
-      target_images:
-        - "mshta.exe"
-      command_line_contains_any:
-        - "javascript:"
-        - "vbscript:"
-        - "http://"
-        - "https://"
-        - "about:"
-
-  - id: "LOLBIN-004"
-    name: "Regsvr32 Scrobj / Squiblydoo Execution"
-    description: "Detects regsvr32.exe loading remote COM scriptlets via scrobj.dll (Squiblydoo technique)."
-    severity: "critical"
-    mitre_attack:
-      - "T1218.010"
-    detection:
-      target_images:
-        - "regsvr32.exe"
-      command_line_contains_any:
-        - "scrobj.dll"
-        - "/i:http"
-        - "-i:http"
-
-  - id: "LOLBIN-005"
+  - id: "LOLBIN-007"
     name: "Rundll32 Suspicious Inline or Script Execution"
     description: "Detects rundll32.exe executing JavaScript, HTMLApplication, or unusual network/COM payloads."
     severity: "high"
@@ -89,23 +167,7 @@ rules:
         - "syssetup.dll,setupinfobjectinstallaction"
         - "pcwutl.dll,launchapplication"
 
-  - id: "LOLBIN-006"
-    name: "Bitsadmin Suspicious File Transfer or Persistence"
-    description: "Detects bitsadmin.exe transferring remote files or setting notification commands."
-    severity: "high"
-    mitre_attack:
-      - "T1197"
-      - "T1105"
-    detection:
-      target_images:
-        - "bitsadmin.exe"
-      command_line_contains_any:
-        - "/transfer"
-        - "-transfer"
-        - "/addfile"
-        - "/setnotifycmdline"
-
-  - id: "LOLBIN-007"
+  - id: "LOLBIN-008"
     name: "WMIC Process Call Create or Remote XSL Execution"
     description: "Detects WMIC spawning processes or executing remote XSL stylesheets."
     severity: "high"
@@ -119,29 +181,3 @@ rules:
         - "process call create"
         - "/format:http"
         - "/format:\"http"
-
-  - id: "LOLBIN-008"
-    name: "Office Application Spawning Command Interpreter or LOLBin"
-    description: "Detects Microsoft Office applications spawning shells or scripting utilities."
-    severity: "critical"
-    mitre_attack:
-      - "T1204.002"
-      - "T1059"
-    detection:
-      target_images:
-        - "cmd.exe"
-        - "powershell.exe"
-        - "pwsh.exe"
-        - "wscript.exe"
-        - "cscript.exe"
-        - "mshta.exe"
-        - "rundll32.exe"
-        - "regsvr32.exe"
-        - "certutil.exe"
-      suspicious_parents:
-        - "winword.exe"
-        - "excel.exe"
-        - "powerpnt.exe"
-        - "outlook.exe"
-        - "mspub.exe"
-        - "visio.exe"

