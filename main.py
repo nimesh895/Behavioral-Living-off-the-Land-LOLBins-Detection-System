@@ -31,9 +31,9 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "-m",
         "--mode",
-        choices=["psutil_polling", "wmi", "mock"],
+        choices=["auto", "sysmon", "psutil_polling", "mock"],
         default=None,
-        help="Override the collector mode defined in config.yaml",
+        help="Override collector mode (auto, sysmon, psutil_polling, mock)",
     )
     parser.add_argument(
         "--stats",
@@ -83,11 +83,12 @@ def main() -> int:
         mode=config.collector.mode,
         poll_interval=config.collector.poll_interval_seconds,
         ignore_images=config.collector.ignore_images,
+        db_manager=db if config.storage.store_all_events else None,
     )
 
     # Register graceful shutdown handler
     def handle_shutdown(signum: int, _frame: FrameType | None) -> None:
-        logger.info("Received signal %d, stopping collector...", signum)
+        logger.info("Received termination signal (%d), stopping collector...", signum)
         collector.stop()
 
     signal.signal(signal.SIGINT, handle_shutdown)
@@ -97,10 +98,9 @@ def main() -> int:
     triggered_alerts = 0
 
     try:
+        logger.info("Detection pipeline active. Listening for process creation telemetry...")
         for event in collector.stream_events():
             processed_events += 1
-            if config.storage.store_all_events:
-                db.insert_process_event(event)
 
             alerts = engine.evaluate(event)
             for alert in alerts:
@@ -111,6 +111,7 @@ def main() -> int:
     except KeyboardInterrupt:
         logger.info("Interrupted by user, shutting down...")
     finally:
+        collector.stop()
         logger.info(
             "Shutdown complete. Processed %d events and generated %d alerts.",
             processed_events,

@@ -1,147 +1,175 @@
-"""Process creation telemetry collector supporting WMI, psutil polling, and mock replay."""
+"""Unified Windows Process Creation Collector for the LOLBins Detection System.
 
-from collections.abc import Iterator
+Orchestrates Sysmon Event ID 1 subscription with automatic fallback to psutil polling,
+persists events to SQLite, and supports continuous execution with graceful shutdown.
+"""
+
+from collections.abc import Callable, Iterator
+from datetime import datetime, timezone
 import logging
-import time
-import psutil
+from pathlib import Path
 
+from collector.psutil_collector import PsutilCollector
+from collector.sysmon_collector import SysmonCollector
+from storage.database import DatabaseManager
 from utils.models import ProcessEvent
 
 logger = logging.getLogger("lolbins-detector.collector")
 
 
 class ProcessCollector:
-    """Collects Windows process creation events in real time or simulation mode."""
+    """Robust Windows process creation collector.
+
+    Prefers Sysmon Event ID 1 when available, seamlessly falling back to psutil
+    polling if Sysmon is not installed or permission is restricted.
+    """
 
     def __init__(
         self,
-        mode: str = "psutil_polling",
+        mode: str = "auto",
         poll_interval: float = 1.0,
         ignore_images: list[str] | None = None,
+        db_manager: DatabaseManager | None = None,
+        db_path: str | Path | None = None,
     ) -> None:
         """Initialize the process collector.
 
         Args:
-            mode: Collection mode ('psutil_polling', 'wmi', or 'mock').
-            poll_interval: Interval in seconds between process polls.
-            ignore_images: List of executable names to ignore.
+            mode: Collection mode ('auto', 'sysmon', 'psutil_polling', or 'mock').
+                  'auto' automatically selects Sysmon if accessible, else falls back to psutil.
+            poll_interval: Interval in seconds for polling or signal timeouts.
+            ignore_images: List of executable image names to ignore.
+            db_manager: Optional DatabaseManager instance to persist captured events to SQLite.
+            db_path: Optional path to an SQLite database if db_manager is not supplied.
         """
         self.mode = mode.lower()
         self.poll_interval = poll_interval
-        self.ignore_images = {img.lower() for img in (ignore_images or [])}
+        self.ignore_images: set[str] = {img.lower() for img in (ignore_images or [])}
         self._running = False
+
+        # SQLite persistence integration
+        if db_manager is not None:
+            self.db_manager: DatabaseManager | None = db_manager
+        elif db_path is not None:
+            self.db_manager = DatabaseManager(db_path=db_path)
+        else:
+            self.db_manager = None
+
+        # Child collector instances
+        self._sysmon_collector: SysmonCollector | None = None
+        self._psutil_collector: PsutilCollector | None = None
 
     def stop(self) -> None:
-        """Signal the collector loop to stop."""
+        """Gracefully stop the continuous collection loop."""
+        logger.info("Stopping process collector...")
         self._running = False
+        if self._sysmon_collector is not None:
+            self._sysmon_collector.stop()
+        if self._psutil_collector is not None:
+            self._psutil_collector.stop()
 
     def stream_events(self) -> Iterator[ProcessEvent]:
-        """Yield ProcessEvent objects based on the configured collection mode."""
+        """Stream process creation events continuously until stopped.
+
+        Yields:
+            ProcessEvent instances as they occur.
+        """
         self._running = True
+
         if self.mode == "mock":
-            yield from self._stream_mock_events()
-        elif self.mode == "wmi":
-            yield from self._stream_wmi_events()
-        else:
-            yield from self._stream_psutil_events()
-
-    def _stream_psutil_events(self) -> Iterator[ProcessEvent]:
-        """Monitor new process creations via cross-compatible psutil polling."""
-        seen_pids: set[int] = {p.pid for p in psutil.process_iter(["pid"])}
-        logger.info(
-            "Started psutil process monitor (baseline: %d active processes)",
-            len(seen_pids),
-        )
-
-        while self._running:
-            current_pids: set[int] = set()
-            for proc in psutil.process_iter(
-                ["pid", "ppid", "name", "exe", "cmdline", "username"]
-            ):
-                try:
-                    info = proc.info
-                    pid = info["pid"]
-                    current_pids.add(pid)
-
-                    if pid in seen_pids:
-                        continue
-
-                    image = info.get("exe") or info.get("name") or "UNKNOWN"
-                    cmdline_list = info.get("cmdline") or []
-                    command_line = (
-                        " ".join(cmdline_list) if cmdline_list else str(image)
-                    )
-                    ppid = info.get("ppid") or 0
-                    user = info.get("username") or "SYSTEM"
-
-                    parent_image = self._resolve_process_image(ppid)
-                    integrity_level = self._infer_integrity_level(user)
-
-                    event = ProcessEvent(
-                        pid=pid,
-                        ppid=ppid,
-                        image=image,
-                        command_line=command_line,
-                        user=user,
-                        parent_image=parent_image,
-                        integrity_level=integrity_level,
-                    )
-
-                    if event.image_name not in self.ignore_images:
-                        yield event
-
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    continue
-
-            seen_pids = current_pids
-            time.sleep(self.poll_interval)
-
-    def _stream_wmi_events(self) -> Iterator[ProcessEvent]:
-        """Monitor new process creations using Windows Management Instrumentation (WMI)."""
-        try:
-            import wmi  # type: ignore[import-untyped]
-        except ImportError:
-            logger.warning(
-                "WMI module not available; falling back to psutil_polling mode."
-            )
-            yield from self._stream_psutil_events()
+            logger.info("Starting collector in mock simulation mode")
+            for event in self._stream_mock_events():
+                if not self._running:
+                    break
+                self._persist_event(event)
+                yield event
             return
 
-        logger.info("Started Windows WMI Win32_Process watcher")
-        c = wmi.WMI()
-        process_watcher = c.Win32_Process.watch_for("creation")
+        if self.mode == "psutil_polling":
+            logger.info("Collector explicitly set to psutil polling mode")
+            yield from self._stream_with_psutil()
+            return
 
-        while self._running:
+        # 'auto' or 'sysmon' mode: attempt Sysmon first
+        sysmon_available, reason = SysmonCollector.is_available()
+
+        if sysmon_available:
+            logger.info("Sysmon Event ID 1 detected: %s", reason)
+            logger.info("Starting primary telemetry collection via Sysmon Event ID 1")
             try:
-                new_proc = process_watcher(timeout_ms=int(self.poll_interval * 1000))
-                pid = int(new_proc.ProcessId or 0)
-                ppid = int(new_proc.ParentProcessId or 0)
-                image = str(
-                    new_proc.ExecutablePath or new_proc.Name or "UNKNOWN"
+                self._sysmon_collector = SysmonCollector(
+                    poll_interval=self.poll_interval,
+                    ignore_images=self.ignore_images,
                 )
-                command_line = str(new_proc.CommandLine or image)
-                parent_image = self._resolve_process_image(ppid)
-
-                event = ProcessEvent(
-                    pid=pid,
-                    ppid=ppid,
-                    image=image,
-                    command_line=command_line,
-                    user="LOCAL\\User",
-                    parent_image=parent_image,
-                    integrity_level="Medium",
-                )
-                if event.image_name not in self.ignore_images:
+                for event in self._sysmon_collector.stream_events():
+                    if not self._running:
+                        break
+                    self._persist_event(event)
                     yield event
-            except wmi.x_wmi_timed_out:
-                continue
             except Exception as exc:
-                logger.error("WMI watcher error: %s", exc)
-                time.sleep(self.poll_interval)
+                logger.error("Sysmon collector failed during streaming: %s", exc)
+
+            if not self._running:
+                return
+
+            logger.warning("Sysmon stream terminated unexpectedly; falling back to psutil polling.")
+        else:
+            if self.mode == "sysmon":
+                logger.warning(
+                    "Sysmon requested but unavailable (%s). Falling back to psutil polling.",
+                    reason,
+                )
+            else:
+                logger.info(
+                    "Sysmon not available (%s). Defaulting to psutil polling.",
+                    reason,
+                )
+
+        # Fallback to psutil polling
+        yield from self._stream_with_psutil()
+
+    def _stream_with_psutil(self) -> Iterator[ProcessEvent]:
+        """Collect process events via psutil polling fallback."""
+        logger.info("Starting process monitor using psutil polling")
+        self._psutil_collector = PsutilCollector(
+            poll_interval=self.poll_interval,
+            ignore_images=self.ignore_images,
+        )
+        for event in self._psutil_collector.stream_events():
+            if not self._running:
+                break
+            self._persist_event(event)
+            yield event
+
+    def run(self, on_event: Callable[[ProcessEvent], None] | None = None) -> None:
+        """Run the collector continuously until stopped.
+
+        Args:
+            on_event: Optional callback invoked for each captured ProcessEvent.
+        """
+        logger.info("Running process collector service (Ctrl+C to stop)...")
+        try:
+            for event in self.stream_events():
+                if on_event:
+                    try:
+                        on_event(event)
+                    except Exception as exc:
+                        logger.error("Error in on_event callback: %s", exc)
+        except KeyboardInterrupt:
+            logger.info("Collector interrupted by user.")
+        finally:
+            self.stop()
+
+    def _persist_event(self, event: ProcessEvent) -> None:
+        """Save captured process event to SQLite if database manager is configured."""
+        if self.db_manager is not None:
+            try:
+                self.db_manager.insert_process_event(event)
+            except Exception as exc:
+                logger.error("Failed to persist event (PID %d) to SQLite: %s", event.pid, exc)
 
     def _stream_mock_events(self) -> Iterator[ProcessEvent]:
-        """Yield realistic synthetic Windows process creation events for testing."""
-        logger.info("Streaming simulated Windows process events (mock mode)")
+        """Yield synthetic Windows process creation events for testing."""
         sample_events = [
             ProcessEvent(
                 pid=4120,
@@ -151,6 +179,7 @@ class ProcessCollector:
                 user=r"NT AUTHORITY\SYSTEM",
                 parent_image=r"C:\Windows\System32\services.exe",
                 integrity_level="System",
+                creation_time=datetime.now(timezone.utc).isoformat(),
             ),
             ProcessEvent(
                 pid=6832,
@@ -163,6 +192,7 @@ class ProcessCollector:
                 user=r"WORKSTATION\StandardUser",
                 parent_image=r"C:\Windows\System32\cmd.exe",
                 integrity_level="Medium",
+                creation_time=datetime.now(timezone.utc).isoformat(),
             ),
             ProcessEvent(
                 pid=7416,
@@ -175,6 +205,7 @@ class ProcessCollector:
                 user=r"WORKSTATION\StandardUser",
                 parent_image=r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
                 integrity_level="Medium",
+                creation_time=datetime.now(timezone.utc).isoformat(),
             ),
             ProcessEvent(
                 pid=8104,
@@ -184,6 +215,7 @@ class ProcessCollector:
                 user=r"WORKSTATION\AdminUser",
                 parent_image=r"C:\Windows\explorer.exe",
                 integrity_level="High",
+                creation_time=datetime.now(timezone.utc).isoformat(),
             ),
         ]
 
@@ -193,24 +225,3 @@ class ProcessCollector:
             if event.image_name not in self.ignore_images:
                 yield event
         self._running = False
-
-    @staticmethod
-    def _resolve_process_image(pid: int) -> str:
-        """Resolve the executable path or name of a parent process by PID."""
-        if pid <= 0:
-            return "System"
-        try:
-            parent = psutil.Process(pid)
-            return parent.exe() or parent.name()
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            return "UNKNOWN"
-
-    @staticmethod
-    def _infer_integrity_level(username: str) -> str:
-        """Estimate Windows process integrity level based on account context."""
-        upper_user = username.upper()
-        if "SYSTEM" in upper_user or "LOCAL SERVICE" in upper_user or "NETWORK SERVICE" in upper_user:
-            return "System"
-        if "ADMIN" in upper_user:
-            return "High"
-        return "Medium"

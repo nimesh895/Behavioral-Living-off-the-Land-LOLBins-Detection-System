@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS process_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id TEXT UNIQUE NOT NULL,
     timestamp TEXT NOT NULL,
+    creation_time TEXT,
     pid INTEGER NOT NULL,
     ppid INTEGER NOT NULL,
     image TEXT NOT NULL,

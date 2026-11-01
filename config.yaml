@@ -6,10 +6,11 @@ app:
   log_level: "INFO"
 
 collector:
-  # Supported modes: "wmi", "psutil_polling", "mock"
-  mode: "psutil_polling"
+  # Supported modes: "auto", "sysmon", "psutil_polling", "mock"
+  # "auto": prefers Sysmon Event ID 1 if available; falls back to psutil polling
+  mode: "auto"
   poll_interval_seconds: 1.0
-  # Filter out noisy trusted system paths if desired
+  # Filter out noisy trusted system paths if desired (executable file names)
   ignore_images: []
 
 storage:

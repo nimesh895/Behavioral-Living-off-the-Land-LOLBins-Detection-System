@@ -46,6 +46,11 @@ class DatabaseManager:
         schema_sql = self.schema_path.read_text(encoding="utf-8")
         with self._get_connection() as conn:
             conn.executescript(schema_sql)
+            # Ensure backward compatibility if an existing database lacks creation_time
+            try:
+                conn.execute("ALTER TABLE process_events ADD COLUMN creation_time TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         logger.debug("Database initialized at %s", self.db_path)
 
     def insert_process_event(self, event: ProcessEvent) -> None:
@@ -56,13 +61,14 @@ class DatabaseManager:
         """
         query = """
             INSERT OR IGNORE INTO process_events (
-                event_id, timestamp, pid, ppid, image,
+                event_id, timestamp, creation_time, pid, ppid, image,
                 command_line, user, parent_image, integrity_level
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
             event.event_id,
             event.timestamp,
+            event.creation_time or event.timestamp,
             event.pid,
             event.ppid,
             event.image,
@@ -71,8 +77,11 @@ class DatabaseManager:
             event.parent_image,
             event.integrity_level,
         )
-        with self._get_connection() as conn:
-            conn.execute(query, params)
+        try:
+            with self._get_connection() as conn:
+                conn.execute(query, params)
+        except sqlite3.Error as exc:
+            logger.error("Failed to insert process event (PID: %d): %s", event.pid, exc)
 
     def insert_alert(self, alert: Alert) -> None:
         """Store a detection alert in the database.
@@ -109,8 +118,11 @@ class DatabaseManager:
             alert.event.parent_image,
             alert.event.integrity_level,
         )
-        with self._get_connection() as conn:
-            conn.execute(query, params)
+        try:
+            with self._get_connection() as conn:
+                conn.execute(query, params)
+        except sqlite3.Error as exc:
+            logger.error("Failed to insert alert %s: %s", alert.alert_id, exc)
 
     def get_recent_alerts(self, limit: int = 50) -> list[dict[str, Any]]:
         """Retrieve the most recent alerts from the database.

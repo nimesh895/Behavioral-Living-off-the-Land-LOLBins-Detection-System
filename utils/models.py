@@ -38,10 +38,16 @@ class ProcessEvent:
     user: str = "UNKNOWN"
     parent_image: str = "UNKNOWN"
     integrity_level: str = "Medium"
+    creation_time: str = ""
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+    def __post_init__(self) -> None:
+        """Ensure creation_time is populated if omitted."""
+        if not self.creation_time:
+            self.creation_time = self.timestamp
 
     @property
     def image_name(self) -> str:
