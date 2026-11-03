@@ -2,7 +2,7 @@
 
 app:
   name: "lolbins-detector"
-  version: "1.0.0"
+  version: "1.1.0"
   log_level: "INFO"
 
 collector:
@@ -26,9 +26,28 @@ engine:
   # Short-term correlation sliding window duration in seconds (5-10 minutes)
   window_seconds: 600.0
 
+# False Positive Suppression & Alert De-duplication Engine
+suppression:
+  enabled: true
+  cooldown_seconds: 300.0          # Suppress repeated identical alerts within 5 minutes
+  enable_deduplication: true
+  rules:
+    # Example administrative false positive whitelisting rule
+    - rule_id: "LOLBIN-003"
+      user: "NT AUTHORITY\\SYSTEM"
+      command_line_regex: "(?i)windowsupdate"
+      reason: "Legitimate Windows Update BITS transfer job"
+
 output:
   console_alerts: true
   json_log_path: "data/alerts.jsonl"
   markdown_reports_dir: "reports"
   # Timeline reconstruction window (± 5-10 minutes around alert timestamp)
   timeline_window_seconds: 300.0
+
+  # SIEM / Incident Chat Webhook Forwarding (Slack, Discord, Generic SIEM)
+  webhook:
+    enabled: false
+    url: null                      # e.g., "https://hooks.slack.com/services/..."
+    type: "generic"                # "generic", "slack", or "discord"
+    timeout_seconds: 5.0

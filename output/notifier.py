@@ -1,4 +1,4 @@
-"""Unified Alert Dispatcher integrating Console, JSON, and Markdown Report outputs with Timeline Reconstruction."""
+"""Unified Alert Dispatcher integrating Console, JSON, Webhook, and Markdown Report outputs with Timeline Reconstruction."""
 
 import json
 import logging
@@ -7,6 +7,7 @@ from typing import Any
 
 from output.markdown_report import MarkdownReportGenerator
 from output.timeline import TimelineEntry, TimelineReconstructor
+from output.webhook import WebhookDispatcher
 from storage.database import DatabaseManager
 from utils.models import Alert, ProcessEvent, Severity
 
@@ -14,7 +15,7 @@ logger = logging.getLogger("lolbins-detector.output")
 
 
 class AlertDispatcher:
-    """Dispatches enriched security alerts to Console, JSON files, and Markdown SOC reports."""
+    """Dispatches enriched security alerts to Console, JSON files, SIEM Webhooks, and Markdown SOC reports."""
 
     _SEVERITY_COLORS: dict[Severity, str] = {
         Severity.LOW: "\033[36m",       # Cyan
@@ -31,6 +32,9 @@ class AlertDispatcher:
         markdown_reports_dir: str | Path | None = "reports",
         db_manager: DatabaseManager | None = None,
         timeline_window_seconds: float = 300.0,
+        webhook_url: str | None = None,
+        webhook_type: str = "generic",
+        webhook_enabled: bool = False,
     ) -> None:
         """Initialize the alert dispatcher.
 
@@ -40,6 +44,9 @@ class AlertDispatcher:
             markdown_reports_dir: Optional directory to write Markdown SOC incident reports.
             db_manager: Optional DatabaseManager instance for historical timeline reconstruction.
             timeline_window_seconds: Lookback/lookahead window for timeline reconstruction (± 5-10 min).
+            webhook_url: Target URL for SIEM, Slack, or Discord webhook notifications.
+            webhook_type: Format style ('generic', 'slack', or 'discord').
+            webhook_enabled: Whether to forward alerts via HTTP webhook.
         """
         self.console_alerts = console_alerts
         self.json_log_path = Path(json_log_path) if json_log_path else None
@@ -52,7 +59,7 @@ class AlertDispatcher:
         if self.markdown_reports_dir:
             self.markdown_reports_dir.mkdir(parents=True, exist_ok=True)
 
-        # Timeline and Markdown report subcomponents
+        # Subcomponents
         self.timeline_reconstructor = TimelineReconstructor(
             db_manager=db_manager,
             default_window_seconds=timeline_window_seconds,
@@ -61,6 +68,11 @@ class AlertDispatcher:
             MarkdownReportGenerator(output_dir=self.markdown_reports_dir)
             if self.markdown_reports_dir
             else None
+        )
+        self.webhook_dispatcher = WebhookDispatcher(
+            webhook_url=webhook_url,
+            webhook_type=webhook_type,
+            enabled=webhook_enabled,
         )
 
     def dispatch(
@@ -107,12 +119,20 @@ class AlertDispatcher:
                 process_tree=process_tree,
             )
 
+        # 6. Webhook / SIEM Forwarding
+        webhook_delivered = False
+        if self.webhook_dispatcher.enabled:
+            webhook_delivered = self.webhook_dispatcher.dispatch(
+                alert=alert, timeline_count=len(timeline_entries)
+            )
+
         return {
             "alert_id": alert.alert_id,
             "timeline_count": len(timeline_entries),
             "json_log_path": str(self.json_log_path) if self.json_log_path else None,
             "individual_json": str(json_file_path) if json_file_path else None,
             "markdown_report": str(report_file_path) if report_file_path else None,
+            "webhook_delivered": webhook_delivered,
         }
 
     def _print_console_alert(
@@ -141,6 +161,10 @@ class AlertDispatcher:
             f"  Indicators      : {indicators_str}",
             f"  Description     : {alert.description}",
         ]
+
+        # Pe Metadata / OriginalFileName if masqueraded
+        if alert.event.original_file_name:
+            lines.append(f"  PE Metadata     : OriginalFileName: {alert.event.original_file_name}")
 
         # Multi-event sequence info if present
         if alert.context.get("is_sequential"):

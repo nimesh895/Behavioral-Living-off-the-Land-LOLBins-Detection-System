@@ -48,15 +48,17 @@ class DatabaseManager:
         with self._get_connection() as conn:
             conn.executescript(schema_sql)
             # Ensure backward compatibility migrations
-            try:
-                conn.execute("ALTER TABLE process_events ADD COLUMN creation_time TEXT")
-            except sqlite3.OperationalError:
-                pass
-
-            try:
-                conn.execute("ALTER TABLE alerts ADD COLUMN context TEXT DEFAULT '{}'")
-            except sqlite3.OperationalError:
-                pass
+            migrations = [
+                "ALTER TABLE process_events ADD COLUMN creation_time TEXT",
+                "ALTER TABLE process_events ADD COLUMN original_file_name TEXT",
+                "ALTER TABLE process_events ADD COLUMN hashes TEXT DEFAULT '{}'",
+                "ALTER TABLE alerts ADD COLUMN context TEXT DEFAULT '{}'",
+            ]
+            for query in migrations:
+                try:
+                    conn.execute(query)
+                except sqlite3.OperationalError:
+                    pass
 
         logger.debug("Database initialized at %s", self.db_path)
 
@@ -69,8 +71,9 @@ class DatabaseManager:
         query = """
             INSERT OR IGNORE INTO process_events (
                 event_id, timestamp, creation_time, pid, ppid, image,
-                command_line, user, parent_image, integrity_level
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                command_line, user, parent_image, integrity_level,
+                original_file_name, hashes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         params = (
             event.event_id,
@@ -83,6 +86,8 @@ class DatabaseManager:
             event.user,
             event.parent_image,
             event.integrity_level,
+            event.original_file_name,
+            json.dumps(event.hashes or {}),
         )
         try:
             with self._get_connection() as conn:
@@ -161,7 +166,8 @@ class DatabaseManager:
 
         query = """
             SELECT event_id, timestamp, creation_time, pid, ppid, image,
-                   command_line, user, parent_image, integrity_level
+                   command_line, user, parent_image, integrity_level,
+                   original_file_name, hashes
             FROM process_events
             WHERE timestamp >= ? AND timestamp <= ?
             ORDER BY timestamp ASC
@@ -174,6 +180,14 @@ class DatabaseManager:
                 rows = cursor.fetchall()
 
             for r in rows:
+                raw_hashes = r["hashes"] if "hashes" in r.keys() else "{}"
+                parsed_hashes = {}
+                if raw_hashes:
+                    try:
+                        parsed_hashes = json.loads(raw_hashes)
+                    except Exception:
+                        parsed_hashes = {}
+
                 ev = ProcessEvent(
                     event_id=r["event_id"],
                     timestamp=r["timestamp"],
@@ -185,6 +199,8 @@ class DatabaseManager:
                     user=r["user"],
                     parent_image=r["parent_image"],
                     integrity_level=r["integrity_level"],
+                    original_file_name=r["original_file_name"] if "original_file_name" in r.keys() else "",
+                    hashes=parsed_hashes,
                 )
                 events.append(ev)
         except sqlite3.Error as exc:

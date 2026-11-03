@@ -164,6 +164,9 @@ class PsutilCollector:
         # Resolve process integrity level
         integrity_level = self._resolve_integrity_level(pid, user)
 
+        # Resolve PE metadata (OriginalFilename) for binary masquerading detection
+        original_file_name = self._resolve_pe_original_filename(image)
+
         return ProcessEvent(
             pid=pid,
             ppid=ppid,
@@ -174,7 +177,25 @@ class PsutilCollector:
             integrity_level=integrity_level,
             creation_time=creation_time_str,
             timestamp=creation_time_str,
+            original_file_name=original_file_name,
         )
+
+    @staticmethod
+    def _resolve_pe_original_filename(image_path: str) -> str:
+        """Attempt to extract PE OriginalFilename metadata using Windows API."""
+        if not HAS_WIN32_SECURITY or not image_path or image_path == "UNKNOWN":
+            return ""
+        try:
+            import win32api
+            trans = win32api.GetFileVersionInfo(image_path, "\\VarFileInfo\\Translation")
+            if trans:
+                lang, codepage = trans[0]
+                key = f"\\StringFileInfo\\{lang:04x}{codepage:04x}\\OriginalFilename"
+                orig_name = win32api.GetFileVersionInfo(image_path, key)
+                return str(orig_name).strip() if orig_name else ""
+        except Exception:
+            pass
+        return ""
 
     @staticmethod
     def _resolve_parent_image(ppid: int) -> str:

@@ -1,5 +1,5 @@
 -- SQLite Schema for lolbins-detector
--- Stores process creation telemetry and behavioral LOLBin alerts.
+-- Stores process creation telemetry, PE metadata, and behavioral LOLBin alerts.
 
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
@@ -15,12 +15,15 @@ CREATE TABLE IF NOT EXISTS process_events (
     command_line TEXT NOT NULL,
     user TEXT NOT NULL,
     parent_image TEXT NOT NULL,
-    integrity_level TEXT NOT NULL
+    integrity_level TEXT NOT NULL,
+    original_file_name TEXT,
+    hashes TEXT DEFAULT '{}'
 );
 
 CREATE INDEX IF NOT EXISTS idx_process_events_timestamp ON process_events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_process_events_pid ON process_events(pid);
 CREATE INDEX IF NOT EXISTS idx_process_events_image ON process_events(image);
+CREATE INDEX IF NOT EXISTS idx_process_events_original_filename ON process_events(original_file_name);
 
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

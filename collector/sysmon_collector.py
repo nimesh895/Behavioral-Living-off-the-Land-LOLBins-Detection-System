@@ -266,6 +266,16 @@ class SysmonCollector:
         user = data_fields.get("User", "UNKNOWN")
         parent_image = data_fields.get("ParentImage", "UNKNOWN")
         integrity_level = data_fields.get("IntegrityLevel", "Medium")
+        original_file_name = data_fields.get("OriginalFileName", "").strip()
+
+        # Parse Sysmon Hashes (e.g., "MD5=...,SHA256=...,IMPHASH=...")
+        raw_hashes = data_fields.get("Hashes", "")
+        hashes_dict: dict[str, str] = {}
+        if raw_hashes:
+            for item in raw_hashes.split(","):
+                if "=" in item:
+                    algo, val = item.split("=", 1)
+                    hashes_dict[algo.strip().upper()] = val.strip()
 
         # Normalize timestamp format
         creation_time_raw = data_fields.get("UtcTime") or time_created
@@ -286,4 +296,6 @@ class SysmonCollector:
             integrity_level=integrity_level,
             creation_time=creation_time,
             timestamp=creation_time,
+            original_file_name=original_file_name,
+            hashes=hashes_dict,
         )

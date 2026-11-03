@@ -29,7 +29,7 @@ class Severity(StrEnum):
 
 @dataclass(slots=True)
 class ProcessEvent:
-    """Represents a Windows process creation event."""
+    """Represents a Windows process creation event with PE metadata and hash information."""
 
     pid: int
     ppid: int
@@ -39,6 +39,8 @@ class ProcessEvent:
     parent_image: str = "UNKNOWN"
     integrity_level: str = "Medium"
     creation_time: str = ""
+    original_file_name: str = ""
+    hashes: dict[str, str] = field(default_factory=dict)
     timestamp: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
@@ -60,6 +62,16 @@ class ProcessEvent:
         """Extract the parent executable filename in lowercase."""
         normalized = self.parent_image.replace("/", "\\")
         return normalized.rsplit("\\", maxsplit=1)[-1].lower()
+
+    @property
+    def is_masqueraded(self) -> bool:
+        """Check whether the executable was renamed from its original binary name."""
+        if not self.original_file_name:
+            return False
+        clean_orig = self.original_file_name.strip().lower()
+        if not clean_orig.endswith(".exe"):
+            clean_orig += ".exe"
+        return clean_orig != self.image_name
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the process event into a serializable dictionary."""
