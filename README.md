@@ -13,13 +13,19 @@ An enterprise-grade, host-based behavioral detection engine built in Python 3.12
 - [Detection Capabilities](#detection-capabilities)
   - [Single-Event Rules](#1-single-event-behavioral-rules)
   - [Sequential Multi-Event Attack Chains](#2-sequential-multi-event-attack-chains)
-  - [Command-Line Obfuscation Heuristics](#3-command-line-obfuscation-heuristics)
+  - [Binary Masquerading & Renamed LOLBins](#3-binary-masquerading--renamed-lolbins)
+  - [Parent PID (PPID) Spoofing Anomaly Detection](#4-parent-pid-ppid-spoofing-anomaly-detection)
+  - [Command-Line Obfuscation Heuristics](#5-command-line-obfuscation-heuristics)
+- [Suppression & De-duplication Engine](#suppression--de-duplication-engine)
 - [Installation & Quick Start](#installation--quick-start)
 - [Operational Modes](#operational-modes)
+- [Interactive SOC Web Dashboard](#interactive-soc-web-dashboard)
+- [Automated Threat Emulation Test Harness](#automated-threat-emulation-test-harness)
 - [Alerting & Timeline Reconstruction](#alerting--timeline-reconstruction)
   - [Console Triage View](#1-console-triage-view)
   - [JSON & SIEM Integration](#2-json--siem-integration)
-  - [Markdown SOC Incident Reports](#3-markdown-soc-incident-reports)
+  - [Webhook Forwarding (Slack / Discord / SIEM)](#3-webhook-forwarding-slack--discord--siem)
+  - [Markdown SOC Incident Reports](#4-markdown-soc-incident-reports)
 - [MITRE ATT&CK Mapping](#mitre-attck-mapping)
 - [Extending the Engine](#extending-the-engine)
 - [Limitations & Future Roadmap](#limitations--future-roadmap)
@@ -31,7 +37,7 @@ An enterprise-grade, host-based behavioral detection engine built in Python 3.12
 
 Modern adversaries and post-exploitation frameworks increasingly evade traditional signature-based antivirus and Endpoint Detection and Response (EDR) solutions by abusing legitimate, digitally signed operating system utilities. This adversary tradecraft—commonly termed **Living-off-the-Land (LotL)**—allows attackers to execute code, download stages, bypass application whitelisting, and perform lateral movement without dropping custom binaries on disk.
 
-**lolbins-detector** is a modular, standalone behavioral detection framework designed to detect anomalous utility invocations and multi-stage attack sequences in real time. It pairs high-fidelity process telemetry collection (preferring **Sysmon Event ID 1** with automatic **psutil** fallback) with an in-memory **correlation state machine**, temporal event reconstruction (± 5–10 minutes), and automated SOC incident reporting.
+**lolbins-detector** is a modular, standalone behavioral detection framework designed to detect anomalous utility invocations, renamed binaries, and multi-stage attack sequences in real time. It pairs high-fidelity process telemetry collection (preferring **Sysmon Event ID 1** with automatic **psutil** fallback) with an in-memory **correlation state machine**, temporal event reconstruction (± 5–10 minutes), false positive suppression, an interactive SOC web dashboard, and automated incident reporting.
 
 ---
 
@@ -43,8 +49,9 @@ Relying solely on static indicators of compromise (such as binary file hashes or
 2. **Dual-Use Functionality**: Native utilities possess administrative capabilities (e.g., certificate verification, BITS job management) that adversaries repurpose for ingress tool transfer and proxy execution.
 3. **Multi-Stage Chains**: Sophisticated threat actors decouple operations across multiple hops—using one utility to download a remote payload, a second to decode it, and a third to proxy execution. Single-event detection misses the broader operational context.
 4. **Command-Line Evasion**: Adversaries leverage command-line obfuscation (caret/backtick escaping, environment variable slicing, Base64 encoding) to evade rigid string-matching signatures.
+5. **Binary Masquerading**: Attackers copy native utilities to arbitrary directories under disguised names (e.g., `update.exe` or `svchost.exe`). Checking file names alone is bypassed trivially.
 
-**lolbins-detector** counters these tactics by focusing on **behavioral characteristics**, **process tree lineage**, and **temporal sequence correlation**.
+**lolbins-detector** counters these tactics by focusing on **behavioral characteristics**, **PE OriginalFileName metadata**, **process tree lineage**, and **temporal sequence correlation**.
 
 ---
 
@@ -60,7 +67,8 @@ The engine employs a decoupled, pipeline-driven architecture separating telemetr
 ┌───────────────────────────┐                     ┌───────────────────────────┐
 │     Sysmon Collector      │                     │     psutil Collector      │
 │  WinEventLog: Channel     │                     │  Active PID Diff Polling  │
-│  Sysmon Operational ID 1  │                     │  Win32 Token Integrity    │
+│  Sysmon Operational ID 1  │                     │  Win32 Token Integrity &  │
+│  OriginalFileName & Hashes│                     │  PE Header Metadata       │
 └─────────────┬─────────────┘                     └─────────────┬─────────────┘
               │ (Preferred)                                     │ (Fallback)
               └─────────────────────┬───────────────────────────┘
@@ -73,13 +81,14 @@ The engine employs a decoupled, pipeline-driven architecture separating telemetr
                                     │
          ┌──────────────────────────┼──────────────────────────┐
          ▼                          ▼                          ▼
-┌─────────────────┐       ┌───────────────────┐      ┌──────────────────┐
-│  SQLite Store   │       │   Correlation     │      │ Detection Engine │
-│  WAL Mode DB    │       │   State Machine   │      │ Rule Matching &  │
-│  Event Archive  │       │ (Sliding Window:  │      │ Obfuscation      │
-└────────┬────────┘       │   5–10 minutes)   │      │ Heuristics       │
-         │                └─────────┬─────────┘      └─────────┬────────┘
-         │                          │                          │
+┌─────────────────┐       ┌───────────────────┐      ┌────────────────────────┐
+│  SQLite Store   │       │   Correlation     │      │   Detection Engine     │
+│  WAL Mode DB    │       │   State Machine   │      │ • Single-Event Rules   │
+│  Event Archive  │       │ (Sliding Window:  │      │ • Sequential Chains    │
+└────────┬────────┘       │   5–10 minutes)   │      │ • PE Masquerading      │
+         │                └─────────┬─────────┘      │ • PPID Spoofing Checks │
+         │                          │                │ • Suppression Engine   │
+         │                          │                └─────────┬──────────────┘
          │                          └───────────┬──────────────┘
          │                                      │ Triggered Alert
          │                                      ▼
@@ -98,20 +107,12 @@ The engine employs a decoupled, pipeline-driven architecture separating telemetr
                  ┌──────────────────────────────┼──────────────────────────────┐
                  ▼                              ▼                              ▼
       ┌────────────────────┐         ┌────────────────────┐         ┌────────────────────┐
-      │   Console Triage   │         │    JSON / SIEM     │         │   Markdown Report  │
-      │ ANSI Color Banners │         │ alerts.jsonl &     │         │ Full SOC Incident  │
-      │ Process Tree View  │         │ incident_<id>.json │         │ Response Playbook  │
+      │   Console Triage   │         │    JSON & SIEM     │         │   Markdown Report  │
+      │ ANSI Color Banners │         │ alerts.jsonl,      │         │ Full SOC Incident  │
+      │ Process Tree View  │         │ incident_<id>.json,│         │ Response Playbook  │
+      │ Live Web Dashboard │         │ Slack/Discord Hook │         │                    │
       └────────────────────┘         └────────────────────┘         └────────────────────┘
 ```
-
-### Module Overview
-
-- **`collector/`**: Telemetry engine. Probes for `Microsoft-Windows-Sysmon/Operational` via the Win32 Event Log API. If accessible, streams native Event ID 1 process creations. If Sysmon is absent or permissions are restricted, falls back gracefully to `psutil` polling with Win32 Token Integrity inspection (`win32security.OpenProcessToken`).
-- **`engine/`**: Core behavioral detection engine. Maintains an in-memory `CorrelationState` sliding window (5–10 minutes) indexed by user session, process tree lineage, and image name. Supports single-event rules and sequential multi-event state machines.
-- **`rules/`**: Rule definitions supporting both declarative YAML schemas (`rules/definitions/`) and programmatic Python rule classes (`rules/python_rules/`).
-- **`storage/`**: Thread-safe SQLite backend with Write-Ahead Logging (WAL), foreign key enforcement, and temporal window range queries (`get_events_around_timestamp`).
-- **`output/`**: Rich alerting and timeline reconstruction engine. Categorizes surrounding events into `TRIGGER`, `PARENT`, `CHILD`, `SIBLING`, `SAME_USER`, and `ANCESTOR`, outputting to the console, structured JSON, and Markdown reports.
-- **`utils/`**: Strongly typed configuration parsing (`config.yaml`), structured logging, and immutable dataclasses (`ProcessEvent`, `Alert`, `Severity`).
 
 ---
 
@@ -163,13 +164,42 @@ Defined in [`rules/definitions/sequential_lolbins.yaml`](file:///d:/projects/Beh
 - **`SEQ-CHAIN-003` (High)**: **Cascading Process Tree (`cmd.exe` → `powershell.exe` → LOLBin)**  
   Correlates multi-hop process tree progression where `cmd.exe` spawns `powershell.exe`, which subsequently spawns a downstream LOLBin within 3 minutes along the same process hierarchy.
 
-### 3. Command-Line Obfuscation Heuristics
+### 3. Binary Masquerading & Renamed LOLBins
+
+- **`MASQ-001` (Critical)**: **Masquerading: Renamed LOLBin Executable Invocation (`T1036.003`)**  
+  Inspects the binary's internal PE `OriginalFileName` header (via Sysmon or Windows version APIs). If the internal PE metadata indicates a known LOLBin (e.g. `CertUtil.exe`, `mshta.exe`) but the executing file has been renamed (e.g. `updater.exe` or `svchost.exe`), the engine flags the evasion immediately.
+
+### 4. Parent PID (PPID) Spoofing Anomaly Detection
+
+- **`PPID-ANOMALY-001` (High)**: **Suspicious Parent Process Spoofing Anomaly (`T1134.004`)**  
+  Identifies process tree tampering where an unprivileged, interactive user process claims critical core system services (`lsass.exe`, `smss.exe`, `services.exe`) as its parent while running with non-system user credentials or medium/low integrity levels.
+
+### 5. Command-Line Obfuscation Heuristics
 
 The engine automatically evaluates all LOLBin command lines against regex heuristics targeting:
 - **Excessive Caret (`^`) Escaping**: Detects attempts to disrupt static string matching via cmd escaping (e.g., `c^m^d^.^e^x^e`).
 - **Excessive Backtick (`` ` ``) Escaping**: Detects PowerShell string fragmenting (e.g., `d`o`w`n`l`o`a`d`).
 - **Base64 Payload Blocks**: Detects continuous Base64 blocks exceeding 60 characters without standard file paths.
 - **Environment Variable Slicing**: Identifies command lines abusing `%var:~0,1%` variable expansion.
+
+---
+
+## Suppression & De-duplication Engine
+
+To eliminate alert fatigue in production SOC environments, `lolbins-detector` features a built-in suppression and de-duplication engine:
+
+- **Whitelisting Rules**: Configure granular suppression rules in `config.yaml` matching by rule ID, username, command-line regex, or parent image:
+  ```yaml
+  suppression:
+    enabled: true
+    cooldown_seconds: 300.0
+    rules:
+      - rule_id: "LOLBIN-003"
+        user: "NT AUTHORITY\\SYSTEM"
+        command_line_regex: "(?i)windowsupdate"
+        reason: "Legitimate Windows Update BITS transfer job"
+  ```
+- **Alert De-duplication**: Repeated identical alerts (same rule, user, and command line) within the cooldown window (default 5 minutes) are collapsed into a single notification with an aggregated hit count (`alert_hit_count`).
 
 ---
 
@@ -199,12 +229,12 @@ pip install -r requirements.txt
 
 *Key dependencies: `PyYAML>=6.0.1`, `psutil>=5.9.8`, `pywin32>=306` (Windows), `rich>=13.7.0`.*
 
-### 3. Run Simulated Verification Mode
+### 3. Run Automated Threat Simulation Test Harness
 
-Verify the entire detection pipeline, database ingestion, timeline reconstruction, and report generation using synthetic telemetry:
+Validate the entire detection pipeline, rule matching, masquerading checks, attack chains, and suppression with the built-in test suite:
 
 ```bash
-python main.py --mode mock
+python main.py --test
 ```
 
 ---
@@ -227,6 +257,9 @@ python main.py --mode sysmon
 
 # Force cross-compatible psutil polling
 python main.py --mode psutil_polling
+
+# Run simulated mock events for test verification
+python main.py --mode mock
 ```
 
 ### Database Inspection
@@ -239,9 +272,64 @@ python main.py --stats
 
 ---
 
+## Interactive SOC Web Dashboard
+
+Launch the zero-dependency, local SOC analyst web dashboard:
+
+```bash
+python main.py --dashboard
+# or directly:
+python dashboard.py
+```
+
+Open `http://127.0.0.1:8080/` in any browser to access:
+- **KPI Metrics**: Total Events, Total Alerts, Critical Count, High Count.
+- **Searchable Live Alert Table**: Filter by rule ID, process, user, command line, or severity.
+- **Detailed Triage Drawer**:
+  - Full execution context and command lines.
+  - Process lineage ancestry tree.
+  - MITRE ATT&CK technique tags.
+  - SOC response playbook (process termination, staging path inspection, network isolation).
+
+---
+
+## Automated Threat Emulation Test Harness
+
+Run the automated validation suite to benchmark detection accuracy across all scenarios:
+
+```bash
+python test_harness.py
+```
+
+Sample output:
+```text
+================================================================================
+  LOLBins Detection System - Threat Simulation & Validation Harness
+================================================================================
+
+ID           | Status   | Latency  | Description
+--------------------------------------------------------------------------------
+LOLBIN-001   | PASS     |   0.8ms  | Office App Spawning LOLBin (Word -> Certutil)
+LOLBIN-002   | PASS     |   0.4ms  | Suspicious Certutil Ingress Remote Download
+LOLBIN-003   | PASS     |   0.3ms  | Bitsadmin Remote File Transfer Job
+LOLBIN-004   | PASS     |   0.3ms  | Mshta Inline JavaScript Protocol Execution
+LOLBIN-005   | PASS     |   0.3ms  | Regsvr32 Squiblydoo COM Scriptlet Proxy
+MASQ-001     | PASS     |   0.2ms  | Binary Masquerading (CertUtil Renamed to updater.exe)
+PPID-001     | PASS     |   0.2ms  | Parent PID Spoofing Anomaly (Claims lsass.exe Parent)
+SEQ-001      | PASS     |   0.5ms  | Sequential Chain: Download Cradle -> Staged Execution
+SEQ-002      | PASS     |   0.4ms  | Sequential Chain: LOLBin Activity -> Encoded PowerShell
+SEQ-003      | PASS     |   0.6ms  | Sequential Chain: Process Cascade (cmd -> pwsh -> mshta)
+SUPPRESS     | PASS     |   0.2ms  | False Positive Suppression (Whitelisted BITS Job)
+--------------------------------------------------------------------------------
+
+Test Summary: 11/11 Passed (100.0%), 0 Failed.
+```
+
+---
+
 ## Alerting & Timeline Reconstruction
 
-Whenever a detection rule triggers, the engine gathers all events occurring within **± 5–10 minutes**, resolves the process lineage tree, and dispatches the alert across three channels.
+Whenever a detection rule triggers, the engine gathers all events occurring within **± 5–10 minutes**, resolves the process lineage tree, and dispatches the alert across multiple channels.
 
 ### 1. Console Triage View
 
@@ -316,7 +404,19 @@ Enriched events are appended to `data/alerts.jsonl` and emitted as individual in
 }
 ```
 
-### 3. Markdown SOC Incident Reports
+### 3. Webhook Forwarding (Slack / Discord / SIEM)
+
+Configure the webhook block in `config.yaml` to automatically forward alerts to your incident channel or SIEM endpoint:
+
+```yaml
+output:
+  webhook:
+    enabled: true
+    url: "https://hooks.slack.com/services/T000/B000/XXXX"
+    type: "slack"  # "generic", "slack", or "discord"
+```
+
+### 4. Markdown SOC Incident Reports
 
 Automated reports are written to `reports/incident_<rule_id>_<id>.md`. Each report includes:
 - **Triage Metadata Table** with severity badge and MITRE technique tags
@@ -339,6 +439,8 @@ Automated reports are written to `reports/incident_<rule_id>_<id>.md`. Each repo
 | **`T1218.005`** | System Binary Proxy Execution: Mshta | Defense Evasion | `mshta.exe` (`LOLBIN-004`, `SEQ-CHAIN-001`, `SEQ-CHAIN-003`) |
 | **`T1218.010`** | System Binary Proxy Execution: Regsvr32 | Defense Evasion | `regsvr32.exe` (`LOLBIN-005`, `SEQ-CHAIN-001`) |
 | **`T1218.011`** | System Binary Proxy Execution: Rundll32 | Defense Evasion | `rundll32.exe` (`LOLBIN-007`) |
+| **`T1036.003`** | Masquerading: Rename System Utilities | Defense Evasion | Renamed LOLBin binaries (`MASQ-001`) |
+| **`T1134.004`** | Access Token Manipulation: Parent PID Spoofing | Privilege Escalation, Defense Evasion | Spoofed process lineage (`PPID-ANOMALY-001`) |
 | **`T1105`** | Ingress Tool Transfer | Command and Control | `certutil.exe`, `bitsadmin.exe`, `powershell.exe` (`LOLBIN-002`, `LOLBIN-003`, `SEQ-CHAIN-001`) |
 | **`T1140`** | Deobfuscate/Decode Files or Information | Defense Evasion | `certutil.exe` (`LOLBIN-002`) |
 | **`T1197`** | BITS Jobs | Persistence, Defense Evasion | `bitsadmin.exe` (`LOLBIN-003`) |
@@ -411,15 +513,18 @@ RULES = [CustomCradleToDumpRule()]
 
 - **Polling Latency in psutil Mode**: In systems without Sysmon, `psutil` polling at a 1.0s interval may miss ultra-ephemeral processes that spawn and terminate in under 100 milliseconds.
 - **Kernel-Level Evasion**: User-mode collectors cannot detect direct syscall execution or process unhooking.
-- **Dynamic Renaming**: If an adversary copies `certutil.exe` to an arbitrary name (e.g. `update.exe`) without Sysmon OriginalFileName tracking, image-name filters will not match.
 
 ### Roadmap
 
-- [ ] **Sysmon OriginalFileName & Hashes**: Ingest Sysmon XML `Hashes` (SHA256, ImpHash) and `OriginalFileName` fields to detect renamed binaries.
-- [ ] **Windows ETW (Event Tracing for Windows)**: Implement a native kernel-level ETW consumer for the `Microsoft-Windows-Kernel-Process` provider.
-- [ ] **Parent PID Spoofing Detection**: Validate process creation tokens against Windows kernel thread token identities to identify PPID spoofing.
-- [ ] **Automated Sigma Rule Compiler**: Add a compiler translating Sigma YAML rules directly into the engine's internal rule representation.
-- [ ] **Webhook / SIEM Forwarder**: Add native outputs for Splunk HEC, Elastic Common Schema (ECS), and Microsoft Sentinel.
+- [x] **Sysmon OriginalFileName & Hashes Ingestion**: Integrated into `ProcessEvent` and detection engine.
+- [x] **Binary Masquerading Detection**: PE metadata cross-checking (`MASQ-001`).
+- [x] **Parent PID (PPID) Spoofing Anomaly Checks**: System parent credential mismatch analysis (`PPID-ANOMALY-001`).
+- [x] **False Positive Suppression & De-duplication Engine**: Integrated whitelisting and cooldown windows.
+- [x] **SIEM & Incident Webhooks**: Slack, Discord, and generic SIEM JSON webhooks.
+- [x] **Interactive SOC Web Dashboard**: Zero-dependency real-time triage UI (`dashboard.py`).
+- [x] **Automated Threat Emulation Test Harness**: CI/CD-ready validation runner (`test_harness.py`).
+- [ ] **Windows ETW (Event Tracing for Windows)**: Implement native kernel-level ETW consumer for `Microsoft-Windows-Kernel-Process`.
+- [ ] **Automated Sigma Rule Transpiler**: Convert open-source Sigma rules directly into engine detection rules.
 
 ---
 

